@@ -1,16 +1,28 @@
-version: "3.9"
-
 services:
   cline-proxy:
     build: .
+    image: ghcr.io/qcenjoyll/cline-proxy:latest
     container_name: cline-proxy
     restart: unless-stopped
     ports:
       - "3457:3457"
     volumes:
+      # 账号持久化：首次使用前先在项目根目录创建该文件，否则 Docker 会按目录挂载
       - ./.cline-accounts.json:/app/.cline-accounts.json
+      # 可选：系统提示词覆盖文件（不存在或留空则使用客户端自带）
       - ./override.md:/app/override.md:ro
     environment:
       - PORT=3457
       - ADMIN_USER=${ADMIN_USER:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3457/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
