@@ -1,0 +1,9 @@
+.git
+.github
+.env
+cline-proxy.exe
+*.exe
+data/
+.capture/
+.cline-accounts.json
+.cline-credentials.json

@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  cline-proxy:
+    build: .
+    container_name: cline-proxy
+    restart: unless-stopped
+    ports:
+      - "3457:3457"
+    volumes:
+      - ./.cline-accounts.json:/app/.cline-accounts.json
+      - ./override.md:/app/override.md:ro
+    environment:
+      - PORT=3457
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
