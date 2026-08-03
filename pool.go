@@ -51,11 +51,13 @@ func loadPool() *AccountPool {
 	return pool
 }
 
-func savePool() {
+func savePool() error {
 	data, _ := json.MarshalIndent(pool, "", "  ")
 	if err := os.WriteFile(poolPath, data, 0600); err != nil {
 		log.Printf("Failed to save accounts: %v", err)
+		return err
 	}
+	return nil
 }
 
 func addAccount(acc *Account) {
@@ -184,7 +186,7 @@ func listAccounts() []*Account {
 }
 
 func addAccountFromDeviceAuth() (*Account, error) {
-	fmt.Println("\n=== Add New Cline Account (OAuth) ===\n")
+	fmt.Print("\n=== Add New Cline Account (OAuth) ===\n\n")
 
 	device, err := workosDeviceAuth()
 	if err != nil {
@@ -199,7 +201,7 @@ func addAccountFromDeviceAuth() (*Account, error) {
 	fmt.Println("  1. Open this URL in your browser:")
 	fmt.Println("     " + authURL)
 	fmt.Println("  2. Enter code: " + device.UserCode)
-	fmt.Println("  3. Log in with Google, GitHub, or email\n")
+	fmt.Print("  3. Log in with Google, GitHub, or email\n\n")
 
 	_ = openBrowser(authURL)
 	fmt.Println("  Waiting for authorization...")

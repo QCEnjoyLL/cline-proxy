@@ -15,9 +15,10 @@ type Account struct {
 }
 
 type AccountPool struct {
-	Accounts   []*Account `json:"accounts"`
-	CurrentIdx int        `json:"currentIdx"`
-	Keys       []string   `json:"keys,omitempty"`
+	Accounts     []*Account `json:"accounts"`
+	CurrentIdx   int        `json:"currentIdx"`
+	Keys         []string   `json:"keys,omitempty"`
+	CustomModels []string   `json:"customModels,omitempty"`
 }
 
 type LoginMethod int

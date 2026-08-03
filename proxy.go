@@ -32,7 +32,7 @@ type chatRequest struct {
 	Messages    json.RawMessage `json:"messages"`
 	Stream      bool            `json:"stream,omitempty"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
 	Tools       json.RawMessage `json:"tools,omitempty"`
 	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
@@ -117,14 +117,18 @@ func startProxy(port int) error {
 		})
 	}
 
-	modelsList := []map[string]any{
-		{"id": "cline-free/glm-5.2", "object": "model", "created": time.Now().UnixMilli(), "owned_by": "cline"},
-		{"id": "cline-pass/glm-5.2", "object": "model", "created": time.Now().UnixMilli(), "owned_by": "cline"},
-		{"id": "cline-pass/deepseek-v4-flash", "object": "model", "created": time.Now().UnixMilli(), "owned_by": "cline"},
-		{"id": "cline-pass/qwen3.7-max", "object": "model", "created": time.Now().UnixMilli(), "owned_by": "cline"},
-	}
-
 	modelsHandler := apiKeyHandler(func(w http.ResponseWriter, r *http.Request) {
+		models := allModels()
+		modelsList := make([]map[string]any, 0, len(models))
+		for _, model := range models {
+			owner := "cline"
+			if model.Custom {
+				owner = "custom"
+			}
+			modelsList = append(modelsList, map[string]any{
+				"id": model.ID, "object": "model", "created": time.Now().UnixMilli(), "owned_by": owner,
+			})
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": modelsList})
 	})
 	mux.HandleFunc("/v1/models", modelsHandler)

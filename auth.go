@@ -276,7 +276,7 @@ func parseExpiry(exp any) int64 {
 }
 
 func doLogin() error {
-	fmt.Println("\nStarting Cline OAuth login...\n")
+	fmt.Print("\nStarting Cline OAuth login...\n\n")
 
 	device, err := workosDeviceAuth()
 	if err != nil {
@@ -291,7 +291,7 @@ func doLogin() error {
 	fmt.Println("  1. Open this URL in your browser:")
 	fmt.Println("     " + authURL)
 	fmt.Println("  2. Enter code: " + device.UserCode)
-	fmt.Println("  3. Log in with Google, GitHub, or email\n")
+	fmt.Print("  3. Log in with Google, GitHub, or email\n\n")
 
 	// Try to open browser automatically
 	_ = openBrowser(authURL)

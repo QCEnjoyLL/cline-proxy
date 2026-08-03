@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -241,6 +242,7 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/keys/generate", corsHandler(handleAdminGenerateKey))
 	mux.HandleFunc("/admin/api/keys/delete", corsHandler(handleAdminDeleteKey))
 	mux.HandleFunc("/admin/api/models", corsHandler(handleAdminModels))
+	mux.HandleFunc("/admin/api/models/delete", corsHandler(handleAdminModelDelete))
 	mux.HandleFunc("/admin/api/config", corsHandler(handleAdminConfig))
 	mux.HandleFunc("/admin/api/config/update", corsHandler(handleAdminUpdateConfig))
 }
@@ -876,15 +878,61 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// GET /admin/api/models
+// GET /admin/api/models lists default and custom models.
+// POST /admin/api/models adds a custom model with body: { id }.
 func handleAdminModels(w http.ResponseWriter, r *http.Request) {
-	models := []map[string]any{
-		{"id": "cline-free/glm-5.2", "provider": "zai", "cost": "free", "status": "active"},
-		{"id": "cline-pass/glm-5.2", "provider": "zai", "cost": "pass", "status": "active"},
-		{"id": "cline-pass/deepseek-v4-flash", "provider": "deepseek", "cost": "pass", "status": "active"},
-		{"id": "cline-pass/qwen3.7-max", "provider": "qwen", "cost": "pass", "status": "active"},
+	switch r.Method {
+	case http.MethodGet:
+		writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{"models": allModels()}})
+	case http.MethodPost:
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})
+			return
+		}
+		id, err := addCustomModel(req.ID)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errModelStorage) {
+				status = http.StatusInternalServerError
+			} else if errors.Is(err, errModelExists) {
+				status = http.StatusConflict
+			}
+			writeAPI(w, status, apiResponse{Error: err.Error()})
+			return
+		}
+		writeAPI(w, http.StatusCreated, apiResponse{Success: true, Data: map[string]any{"id": id}})
+	default:
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 	}
-	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{"models": models}})
+}
+
+// POST /admin/api/models/delete deletes a custom model with body: { id }.
+func handleAdminModelDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})
+		return
+	}
+	if err := deleteCustomModel(req.ID); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errModelStorage) {
+			status = http.StatusInternalServerError
+		} else if errors.Is(err, errModelNotFound) {
+			status = http.StatusNotFound
+		}
+		writeAPI(w, status, apiResponse{Error: err.Error()})
+		return
+	}
+	writeAPI(w, http.StatusOK, apiResponse{Success: true})
 }
 
 // GET /admin/api/stats

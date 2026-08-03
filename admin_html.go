@@ -86,6 +86,8 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
 .model-tag{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;background:var(--bg3);color:var(--text2);margin:2px}
 .model-tag.free{border:1px solid var(--green);color:var(--green)}
 .model-tag.pass{border:1px solid var(--yellow);color:var(--yellow)}
+.model-tag.custom{border:1px solid var(--accent);color:var(--accent)}
+.model-tag button{border:0;background:none;color:inherit;cursor:pointer;padding:0 0 0 6px;font-size:12px}
 .justify-between{display:flex;justify-content:space-between;align-items:center}
 </style>
 </head>
@@ -231,6 +233,14 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
 <div class="section">
   <div class="section-title">🧠 可用模型</div>
   <div class="section-body">
+    <div class="form-row">
+      <div class="field">
+        <label>&#x81EA;&#x5B9A;&#x4E49;&#x6A21;&#x578B; ID</label>
+        <input type="text" id="customModelId" maxlength="200" placeholder="openai/gpt-4.1-nano">
+      </div>
+      <button class="btn btn-primary" onclick="addCustomModel()">&#x2795; &#x6DFB;&#x52A0;&#x6A21;&#x578B;</button>
+    </div>
+    <p style="color:var(--text2);margin-bottom:10px">&#x9ED8;&#x8BA4;&#x6A21;&#x578B;&#x59CB;&#x7EC8;&#x4FDD;&#x7559;&#xFF1B;&#x81EA;&#x5B9A;&#x4E49;&#x6A21;&#x578B;&#x4F1A;&#x51FA;&#x73B0;&#x5728; /v1/models &#x4E2D;&#x3002;</p>
     <div id="modelsList">加载中...</div>
   </div>
 </div>
@@ -629,11 +639,49 @@ async function loadModels() {
   try {
     const d = await api('GET', '/models');
     const models = d.data.models || [];
-    _('modelsList').innerHTML = models.map(m =>
-      '<span class="model-tag ' + (m.cost || 'free') + '">' + esc(m.id) + '</span>'
-    ).join('') || '<div class="empty">暂无模型</div>';
-  } catch (e) { _('modelsList').textContent = '加载失败'; }
+    const list = _('modelsList');
+    list.innerHTML = '';
+    models.forEach(m => {
+      const tag = document.createElement('span');
+      tag.className = 'model-tag ' + (m.cost || 'free');
+      tag.appendChild(document.createTextNode(m.id));
+      if (m.custom) {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.title = '\u5220\u9664\u81ea\u5b9a\u4e49\u6a21\u578b';
+        remove.textContent = '\u2715';
+        remove.addEventListener('click', () => deleteCustomModel(m.id));
+        tag.appendChild(remove);
+      }
+      list.appendChild(tag);
+    });
+    if (!models.length) list.innerHTML = '<div class="empty">\u6682\u65e0\u6a21\u578b</div>';
+  } catch (e) { _('modelsList').textContent = '\u52a0\u8f7d\u5931\u8d25'; }
 }
+
+async function addCustomModel() {
+  const input = _('customModelId');
+  const id = input.value.trim();
+  if (!id) { toast('\u8bf7\u8f93\u5165\u6a21\u578b ID', 'error'); return; }
+  try {
+    await api('POST', '/models', { id });
+    input.value = '';
+    await loadModels();
+    toast('\u6a21\u578b\u5df2\u6dfb\u52a0', 'success');
+  } catch (e) { toast('\u6dfb\u52a0\u5931\u8d25: ' + e.message, 'error'); }
+}
+
+async function deleteCustomModel(id) {
+  try {
+    await api('POST', '/models/delete', { id });
+    await loadModels();
+    toast('\u6a21\u578b\u5df2\u5220\u9664', 'success');
+  } catch (e) { toast('\u5220\u9664\u5931\u8d25: ' + e.message, 'error'); }
+}
+
+_('customModelId').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addCustomModel();
+});
 
 // ========== 配置加载 ==========
 async function loadConfig() {

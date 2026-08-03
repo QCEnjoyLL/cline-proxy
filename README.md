@@ -12,7 +12,7 @@ Cline API 的反向代理服务，支持多账号轮询、OpenAI 与 Anthropic M
 - **API Key 鉴权**：保护代理端点，支持生成/删除多个 API Key
 - **System Prompt 覆盖**：项目目录放 `override.md` 可整体替换系统提示词
 - **账号导入**：OAuth 浏览器登录、手动 Token 输入、批量文件导入
-- **持久化存储**：账号与 Key 保存在 `.cline-accounts.json`
+- **持久化存储**：账号、Key 与自定义模型保存在 `.cline-accounts.json`
 
 ## 快速开始
 
@@ -139,7 +139,11 @@ Model:    cline-free/glm-5.2
 | `cline-pass/deepseek-v4-flash` | ❌ 403 · 不消耗额度 | 需要 `cline-pass` 订阅 |
 | `cline-pass/qwen3.7-max` | ❌ 403 · 不消耗额度 | 需要 `cline-pass` 订阅 |
 
-可在后台 **设置** → **默认模型** 中修改默认模型。
+请求未指定模型时使用 `cline-free/glm-5.2`。
+
+### 添加自定义模型
+
+在后台 **设置** → **可用模型** 中输入上游支持的模型 ID 并添加。自定义模型会持久化到 `.cline-accounts.json`，同时出现在 OpenAI 兼容的 `/v1/models` 与 `/models` 接口中。内置的默认模型始终保留，不能被删除。
 
 ## GitHub Actions 自动打包镜像
 
