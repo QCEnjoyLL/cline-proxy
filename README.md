@@ -141,7 +141,7 @@ Model:    cline-free/glm-5.2
 | `cline-pass/deepseek-v4-flash` | ❌ 403 · 不消耗额度 | 需要 `cline-pass` 订阅 |
 | `cline-pass/qwen3.7-max` | ❌ 403 · 不消耗额度 | 需要 `cline-pass` 订阅 |
 
-请求未指定模型时使用 `cline-free/glm-5.2`。
+可在后台 **设置** → **默认模型** 的下拉框中选择请求未指定模型时使用的模型；选择会持久化保存。初始值为 `cline-free/glm-5.2`。
 
 ### 添加自定义模型
 

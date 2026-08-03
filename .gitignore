@@ -1,5 +1,6 @@
 .env
 cline-proxy.exe
+cline-proxy.exe~
 data/
 .cline-accounts.json
 .cline-credentials.json

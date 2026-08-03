@@ -856,7 +856,7 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		"strategy":     cfg.Strategy,
 		"version":      "go-1.1",
 		"poolPath":     poolPath,
-		"defaultModel": defaultModel,
+		"defaultModel": getDefaultModel(),
 		"headers":      cfg.Headers,
 	}})
 }
@@ -875,26 +875,40 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req struct {
-		Strategy string            `json:"strategy"`
-		Headers  map[string]string `json:"headers"`
+		Strategy     string            `json:"strategy"`
+		Headers      map[string]string `json:"headers"`
+		DefaultModel *string           `json:"defaultModel"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})
 		return
 	}
 
-	cfg := getProxyConfig()
-	changed := false
-
 	if req.Strategy != "" {
 		switch req.Strategy {
 		case "round_robin", "fill", "random":
-			cfg.Strategy = req.Strategy
-			changed = true
 		default:
 			writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid strategy, must be: round_robin, fill, random"})
 			return
 		}
+	}
+
+	if req.DefaultModel != nil {
+		if err := setDefaultModel(*req.DefaultModel); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errModelStorage) {
+				status = http.StatusInternalServerError
+			}
+			writeAPI(w, status, apiResponse{Error: err.Error()})
+			return
+		}
+	}
+
+	cfg := getProxyConfig()
+	changed := false
+	if req.Strategy != "" {
+		cfg.Strategy = req.Strategy
+		changed = true
 	}
 
 	if req.Headers != nil {
@@ -909,8 +923,9 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
-		"strategy": cfg.Strategy,
-		"headers":  cfg.Headers,
+		"strategy":     cfg.Strategy,
+		"headers":      cfg.Headers,
+		"defaultModel": getDefaultModel(),
 	}})
 }
 

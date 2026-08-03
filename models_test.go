@@ -107,10 +107,19 @@ func TestCustomModelChangesRollBackWhenPersistenceFails(t *testing.T) {
 	if got := len(loadPool().CustomModels); got != 0 {
 		t.Fatalf("failed add left %d custom models in memory", got)
 	}
+	if err := setDefaultModel(defaultModels[1].ID); !errors.Is(err, errModelStorage) {
+		t.Fatalf("default model storage error = %v, want errModelStorage", err)
+	}
+	if got := getDefaultModel(); got != defaultModel {
+		t.Fatalf("failed default update was not rolled back: %q", got)
+	}
 
 	poolPath = originalPath
 	if _, err := addCustomModel("provider/model"); err != nil {
 		t.Fatalf("add custom model: %v", err)
+	}
+	if err := setDefaultModel("provider/model"); err != nil {
+		t.Fatalf("set custom default model: %v", err)
 	}
 	poolPath = t.TempDir()
 	if err := deleteCustomModel("provider/model"); !errors.Is(err, errModelStorage) {
@@ -118,6 +127,9 @@ func TestCustomModelChangesRollBackWhenPersistenceFails(t *testing.T) {
 	}
 	if got := loadPool().CustomModels; len(got) != 1 || got[0] != "provider/model" {
 		t.Fatalf("failed delete did not roll back: %v", got)
+	}
+	if got := getDefaultModel(); got != "provider/model" {
+		t.Fatalf("failed delete did not restore default model: %q", got)
 	}
 }
 
@@ -156,5 +168,79 @@ func TestAdminModelHandlers(t *testing.T) {
 	handleAdminModelDelete(deleteResponse, httptest.NewRequest(http.MethodPost, "/admin/api/models/delete", strings.NewReader(`{"id":"provider/model"}`)))
 	if deleteResponse.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, want %d; body=%s", deleteResponse.Code, http.StatusOK, deleteResponse.Body.String())
+	}
+}
+
+func TestDefaultModelSelectionPersistsAndDrivesRequests(t *testing.T) {
+	useTemporaryPool(t)
+	if got := getDefaultModel(); got != defaultModel {
+		t.Fatalf("initial default model = %q, want %q", got, defaultModel)
+	}
+	if _, err := addCustomModel("provider/custom-model"); err != nil {
+		t.Fatalf("add custom model: %v", err)
+	}
+	if err := setDefaultModel("provider/custom-model"); err != nil {
+		t.Fatalf("set default model: %v", err)
+	}
+
+	pool = nil
+	if got := getDefaultModel(); got != "provider/custom-model" {
+		t.Fatalf("persisted default model = %q", got)
+	}
+	if got := buildUpstreamBody(map[string]any{}, false)["model"]; got != "provider/custom-model" {
+		t.Fatalf("upstream default model = %v", got)
+	}
+	if got := buildUpstreamBody(map[string]any{"model": "request/model"}, false)["model"]; got != "request/model" {
+		t.Fatalf("request model did not override default: %v", got)
+	}
+}
+
+func TestDefaultModelValidationAndCustomDeletionFallback(t *testing.T) {
+	useTemporaryPool(t)
+	if err := setDefaultModel("missing/model"); !errors.Is(err, errModelUnknown) {
+		t.Fatalf("unknown default error = %v, want errModelUnknown", err)
+	}
+	if _, err := addCustomModel("provider/custom-model"); err != nil {
+		t.Fatalf("add custom model: %v", err)
+	}
+	if err := setDefaultModel("provider/custom-model"); err != nil {
+		t.Fatalf("set default model: %v", err)
+	}
+	if err := deleteCustomModel("provider/custom-model"); err != nil {
+		t.Fatalf("delete custom model: %v", err)
+	}
+	if got := getDefaultModel(); got != defaultModel {
+		t.Fatalf("default after custom deletion = %q, want %q", got, defaultModel)
+	}
+	pool = nil
+	if got := getDefaultModel(); got != defaultModel {
+		t.Fatalf("persisted fallback = %q, want %q", got, defaultModel)
+	}
+}
+
+func TestAdminDefaultModelConfig(t *testing.T) {
+	useTemporaryPool(t)
+	if _, err := addCustomModel("provider/custom-model"); err != nil {
+		t.Fatalf("add custom model: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handleAdminUpdateConfig(response, httptest.NewRequest(http.MethodPost, "/admin/api/config/update", strings.NewReader(`{"defaultModel":"provider/custom-model"}`)))
+	if response.Code != http.StatusOK || getDefaultModel() != "provider/custom-model" {
+		t.Fatalf("config update status=%d default=%q body=%s", response.Code, getDefaultModel(), response.Body.String())
+	}
+	var body struct {
+		Data struct {
+			DefaultModel string `json:"defaultModel"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil || body.Data.DefaultModel != "provider/custom-model" {
+		t.Fatalf("config response default=%q err=%v", body.Data.DefaultModel, err)
+	}
+
+	invalidResponse := httptest.NewRecorder()
+	handleAdminUpdateConfig(invalidResponse, httptest.NewRequest(http.MethodPost, "/admin/api/config/update", strings.NewReader(`{"defaultModel":"missing/model"}`)))
+	if invalidResponse.Code != http.StatusBadRequest || getDefaultModel() != "provider/custom-model" {
+		t.Fatalf("invalid config status=%d default=%q", invalidResponse.Code, getDefaultModel())
 	}
 }

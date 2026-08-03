@@ -237,7 +237,7 @@ func startProxy(port int) error {
 	fmt.Printf("  http://%s\n", addr)
 	fmt.Printf("  http://%s/v1\n", addr)
 	fmt.Println("  API Key: any value")
-	fmt.Printf("  Model:   %s\n", defaultModel)
+	fmt.Printf("  Model:   %s\n", getDefaultModel())
 	fmt.Printf("  Accounts: %d total, %d active\n", len(loadPool().Accounts), activeCount)
 	fmt.Println(strings.Repeat("=", 58))
 
@@ -288,7 +288,7 @@ func buildUpstreamBody(params map[string]any, stream bool) map[string]any {
 		maxTokens = int(mt)
 	}
 
-	model := defaultModel
+	model := getDefaultModel()
 	if m, ok := params["model"].(string); ok && m != "" {
 		model = m
 	}

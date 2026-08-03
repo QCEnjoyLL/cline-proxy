@@ -15,6 +15,7 @@ var (
 	errModelNotFound = errors.New("custom model not found")
 	errDefaultModel  = errors.New("default models cannot be deleted")
 	errModelStorage  = errors.New("persist model configuration")
+	errModelUnknown  = errors.New("model is not configured")
 )
 
 type modelDefinition struct {
@@ -30,6 +31,53 @@ var defaultModels = []modelDefinition{
 	{ID: "cline-pass/glm-5.2", Provider: "zai", Cost: "pass", Status: "active"},
 	{ID: "cline-pass/deepseek-v4-flash", Provider: "deepseek", Cost: "pass", Status: "active"},
 	{ID: "cline-pass/qwen3.7-max", Provider: "qwen", Cost: "pass", Status: "active"},
+}
+
+func modelExistsLocked(p *AccountPool, id string) bool {
+	for _, model := range defaultModels {
+		if model.ID == id {
+			return true
+		}
+	}
+	for _, customID := range p.CustomModels {
+		normalizedID, err := normalizeModelID(customID)
+		if err == nil && normalizedID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func getDefaultModel() string {
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if p.DefaultModel != "" && modelExistsLocked(p, p.DefaultModel) {
+		return p.DefaultModel
+	}
+	return defaultModel
+}
+
+func setDefaultModel(id string) error {
+	id, err := normalizeModelID(id)
+	if err != nil {
+		return err
+	}
+
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if !modelExistsLocked(p, id) {
+		return errModelUnknown
+	}
+
+	previous := p.DefaultModel
+	p.DefaultModel = id
+	if err := savePool(); err != nil {
+		p.DefaultModel = previous
+		return fmt.Errorf("%w: %v", errModelStorage, err)
+	}
+	return nil
 }
 
 func allModels() []modelDefinition {
@@ -123,6 +171,7 @@ func deleteCustomModel(id string) error {
 	defer poolMu.Unlock()
 
 	original := append([]string(nil), p.CustomModels...)
+	originalDefault := p.DefaultModel
 	filtered := make([]string, 0, len(p.CustomModels))
 	for _, customID := range p.CustomModels {
 		normalizedID, normalizeErr := normalizeModelID(customID)
@@ -135,8 +184,12 @@ func deleteCustomModel(id string) error {
 		return errModelNotFound
 	}
 	p.CustomModels = filtered
+	if p.DefaultModel == id {
+		p.DefaultModel = defaultModel
+	}
 	if err := savePool(); err != nil {
 		p.CustomModels = original
+		p.DefaultModel = originalDefault
 		return fmt.Errorf("%w: %v", errModelStorage, err)
 	}
 	return nil

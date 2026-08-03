@@ -251,7 +251,7 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
   <div class="section-body">
     <div class="form-row">
       <div class="field"><label>监听地址</label><input type="text" id="settingAddr" disabled></div>
-      <div class="field"><label>默认模型</label><input type="text" id="settingDefModel" disabled></div>
+      <div class="field"><label>默认模型</label><select id="settingDefModel" onchange="updateDefaultModel()"></select></div>
     </div>
     <div class="form-row">
       <div class="field">
@@ -620,6 +620,21 @@ async function updateConfig() {
   } catch (e) { toast('更新失败: ' + e.message, 'error'); }
 }
 
+async function updateDefaultModel() {
+  const select = _('settingDefModel');
+  const defaultModel = select.value;
+  if (!defaultModel) return;
+  select.disabled = true;
+  try {
+    const d = await api('POST', '/config/update', { defaultModel });
+    select.dataset.selected = d.data.defaultModel;
+    toast('默认模型已更新为: ' + d.data.defaultModel, 'success');
+  } catch (e) {
+    toast('默认模型更新失败: ' + e.message, 'error');
+    await loadConfig();
+  } finally { select.disabled = false; }
+}
+
 function addHeaderRow() {
   const tbody = _('headersTableBody');
   const tr = document.createElement('tr');
@@ -661,6 +676,16 @@ async function loadModels() {
   try {
     const d = await api('GET', '/models');
     const models = d.data.models || [];
+    const select = _('settingDefModel');
+    const selectedModel = select.dataset.selected || select.value;
+    select.replaceChildren();
+    models.forEach(m => {
+      const option = document.createElement('option');
+      option.value = m.id;
+      option.textContent = m.id;
+      select.appendChild(option);
+    });
+    if (models.some(m => m.id === selectedModel)) select.value = selectedModel;
     const list = _('modelsList');
     list.innerHTML = '';
     models.forEach(m => {
@@ -697,6 +722,7 @@ async function deleteCustomModel(id) {
   try {
     await api('POST', '/models/delete', { id });
     await loadModels();
+    await loadConfig();
     toast('\u6a21\u578b\u5df2\u5220\u9664', 'success');
   } catch (e) { toast('\u5220\u9664\u5931\u8d25: ' + e.message, 'error'); }
 }
@@ -714,7 +740,10 @@ async function loadConfig() {
     if (c.strategy) _('settingStrategy').value = c.strategy;
     if (c.version) _('settingVersion').value = c.version;
     if (c.poolPath) _('settingPoolPath').value = c.poolPath;
-    if (c.defaultModel) _('settingDefModel').value = c.defaultModel;
+    if (c.defaultModel) {
+      _('settingDefModel').dataset.selected = c.defaultModel;
+      _('settingDefModel').value = c.defaultModel;
+    }
     if (c.headers) {
       const tbody = _('headersTableBody');
       tbody.innerHTML = Object.entries(c.headers).map(([k, v]) =>

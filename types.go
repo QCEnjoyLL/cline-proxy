@@ -19,6 +19,7 @@ type AccountPool struct {
 	CurrentIdx   int        `json:"currentIdx"`
 	Keys         []string   `json:"keys,omitempty"`
 	CustomModels []string   `json:"customModels,omitempty"`
+	DefaultModel string     `json:"defaultModel,omitempty"`
 }
 
 type LoginMethod int
