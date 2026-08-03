@@ -217,6 +217,11 @@ type apiResponse struct {
 	Message string      `json:"message,omitempty"`
 }
 
+type accountTransfer struct {
+	RefreshToken string `json:"refreshToken"`
+	Email        string `json:"email"`
+}
+
 func writeAPI(w http.ResponseWriter, status int, resp apiResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -228,6 +233,7 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/login", corsHandler(handleAdminLogin))
 	mux.HandleFunc("/admin/logout", corsHandler(handleAdminLogout))
 	mux.HandleFunc("/admin/api/accounts", corsHandler(handleAdminAccounts))
+	mux.HandleFunc("/admin/api/accounts/export", corsHandler(handleAdminAccountExport))
 	mux.HandleFunc("/admin/api/accounts/add", corsHandler(handleAdminAccountAdd))
 	mux.HandleFunc("/admin/api/accounts/delete", corsHandler(handleAdminAccountDelete))
 	mux.HandleFunc("/admin/api/oauth/start", corsHandler(handleOAuthStart))
@@ -272,6 +278,39 @@ func handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 			"poolIndex":  loadPool().CurrentIdx,
 		},
 	})
+}
+
+// GET /admin/api/accounts/export returns data accepted by the batch import API.
+func handleAdminAccountExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
+		return
+	}
+
+	p := loadPool()
+	poolMu.Lock()
+	accounts := make([]accountTransfer, 0, len(p.Accounts))
+	for _, account := range p.Accounts {
+		if account == nil {
+			continue
+		}
+		accounts = append(accounts, accountTransfer{
+			RefreshToken: account.RefreshToken,
+			Email:        account.Email,
+		})
+	}
+	poolMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="cline-accounts.json"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(accounts); err != nil {
+		log.Printf("Failed to export accounts: %v", err)
+	}
 }
 
 // POST /admin/api/accounts/add  body: { refreshToken, email }
@@ -596,10 +635,7 @@ func handleBatchImport(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req struct {
-		Tokens []struct {
-			RefreshToken string `json:"refreshToken"`
-			Email        string `json:"email"`
-		} `json:"tokens"`
+		Tokens []accountTransfer `json:"tokens"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})

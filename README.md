@@ -11,7 +11,7 @@ Cline API 的反向代理服务，支持多账号轮询、OpenAI 与 Anthropic M
 - **中文管理后台**：访问 `/admin/` 管理账号、API Key、模型配置、请求头；带登录页保护（`ADMIN_USER` / `ADMIN_PASSWORD`）
 - **API Key 鉴权**：保护代理端点，支持生成/删除多个 API Key
 - **System Prompt 覆盖**：项目目录放 `override.md` 可整体替换系统提示词
-- **账号导入**：OAuth 浏览器登录、手动 Token 输入、批量文件导入
+- **账号导入导出**：OAuth 浏览器登录、手动 Token 输入、批量文件导入与兼容格式导出
 - **持久化存储**：账号、Key 与自定义模型保存在 `.cline-accounts.json`
 
 ## 快速开始
@@ -85,6 +85,8 @@ ADMIN_PASSWORD=你的强密码
 - **OAuth 浏览器登录**：点击按钮弹出 WorkOS 登录窗口，完成后自动填入
 - **手动输入 Token**：输入已有账号的 Access Token
 - **批量文件导入**：上传包含账号数据的 JSON 文件
+
+在 **账号管理** 点击 **批量导出**，可下载与批量导入兼容的 JSON 文件；文件仅包含 `refreshToken` 和 `email`。该文件含登录凭据，请妥善保管。
 
 ### 2. 配置客户端
 

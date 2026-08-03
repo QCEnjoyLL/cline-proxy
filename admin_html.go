@@ -133,6 +133,7 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
   <h2>👤 账号管理</h2>
   <div style="display:flex;gap:8px">
     <button class="btn btn-primary btn-sm" onclick="switchTab('import')">➕ 添加</button>
+    <button class="btn btn-sm" onclick="exportAccounts()">📤 批量导出</button>
     <button class="btn btn-sm" onclick="loadAccounts()">🔄 刷新</button>
   </div>
 </div>
@@ -402,6 +403,27 @@ async function loadAccounts() {
         '</td></tr>';
     }).join('');
   } catch (e) { toast('加载账号失败: ' + e.message, 'error'); }
+}
+
+async function exportAccounts() {
+  try {
+    const res = await fetch(API + '/accounts/export');
+    if (res.status === 401) {
+      window.location.href = '/admin/login';
+      return;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'cline-accounts-' + new Date().toISOString().slice(0, 10) + '.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('已导出全部账号', 'success');
+  } catch (e) { toast('导出失败: ' + e.message, 'error'); }
 }
 
 async function deleteAccount(id) {
