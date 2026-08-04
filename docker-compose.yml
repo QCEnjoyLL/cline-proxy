@@ -1,6 +1,5 @@
 services:
   cline-proxy:
-    build: .
     image: ghcr.io/qcenjoyll/cline-proxy:latest
     container_name: cline-proxy
     restart: unless-stopped

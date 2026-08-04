@@ -1,211 +1,336 @@
-# Cline Go Proxy
+# ⚡ Cline Go Proxy
 
-[![Docker Build](https://github.com/QCEnjoyLL/cline-proxy/actions/workflows/docker-build.yml/badge.svg)](https://github.com/QCEnjoyLL/cline-proxy/actions/workflows/docker-build.yml)
+[![Docker Image](https://img.shields.io/badge/GHCR-ghcr.io%2Fqcenjoyll%2Fcline--proxy-blue?logo=docker)](https://github.com/QCEnjoyLL/cline-proxy/pkgs/container/cline-proxy)
 
-Cline API 的反向代理服务，支持多账号轮询、OpenAI 与 Anthropic Messages API 双协议、API Key 鉴权，内置带登录保护的中文管理后台。
+一个面向 Cline API 的轻量反向代理：支持多账号轮询、OpenAI / Anthropic 双协议、API Key 鉴权，以及带登录保护的中文管理后台。
 
-## 功能
+> 📦 镜像已经发布到 GHCR，使用者只需拉取镜像，无需安装 Go，也无需在本地构建。
 
-- **双协议兼容**：同时支持 `/v1/chat/completions`（OpenAI）和 `/v1/messages`（Anthropic Messages API）
-- **多账号轮询**：自动在多个 Cline 账号间切换负载（支持 `round_robin` / `fill` / `random` 策略）
-- **中文管理后台**：访问 `/admin/` 管理账号、API Key、模型配置、请求头；带登录页保护（`ADMIN_USER` / `ADMIN_PASSWORD`）
-- **API Key 鉴权**：保护代理端点，支持生成/删除多个 API Key
-- **System Prompt 覆盖**：项目目录放 `override.md` 可整体替换系统提示词
-- **账号导入导出**：OAuth 浏览器登录、手动 Token 输入、批量文件导入与兼容格式导出
-- **持久化存储**：账号、Key 与自定义模型保存在 `.cline-accounts.json`
+## ✨ 功能亮点
 
-## 快速开始
+- 🔄 **多账号轮询**：支持 `round_robin`、`fill`、`random` 三种策略
+- 🔌 **双协议兼容**：支持 OpenAI Chat Completions 与 Anthropic Messages API
+- 🖥️ **中文管理后台**：管理账号、API Key、模型、请求头和运行状态
+- 🔐 **双层鉴权**：后台登录会话与代理 API Key 相互独立
+- 📥 **多种账号导入方式**：OAuth、手动输入 Refresh Token、JSON 批量导入
+- 📤 **批量导出账号**：导出文件可直接重新批量导入
+- 🧠 **模型管理**：保留内置模型，并支持添加自定义模型、选择默认模型
+- 📝 **System Prompt 覆盖**：通过 `override.md` 替换客户端系统提示词
+- 💾 **配置持久化**：账号、API Key、自定义模型和默认模型统一保存
+- 🌊 **流式响应**：支持 SSE 与工具调用转换
 
-### 直接运行
+## 🚀 Docker Compose 快速部署
 
-```bash
-# 编译并启动（默认端口 3457）
-go build -o cline-proxy.exe .
-./cline-proxy.exe
-
-# 指定端口
-./cline-proxy.exe -port 3457
-
-# 构建 + 启动 + 自动打开浏览器
-go run . -start
-```
-
-启动后访问 http://127.0.0.1:3457/admin/ 进入管理后台。
-
-### Docker 部署（推荐）
-
-**1. 准备配置**（在项目根目录）
+### 1️⃣ 获取部署文件
 
 ```bash
-# 登录账号配置（Docker Compose 会自动读取 .env）
-cp .env.example .env        # 然后编辑 ADMIN_USER / ADMIN_PASSWORD
-
-# 账号持久化文件：必须先创建，否则 Docker 会把同名路径当成目录挂载，导致保存报错
-touch .cline-accounts.json  # Windows: New-Item .cline-accounts.json
-
-# 可选：系统提示词覆盖文件（不存在或留空则使用客户端自带提示词）
-touch override.md
+git clone https://github.com/QCEnjoyLL/cline-proxy.git
+cd cline-proxy
 ```
 
-**2. 构建并启动**
+### 2️⃣ 准备配置和持久化文件
+
+Linux / macOS：
 
 ```bash
-docker compose up -d --build
-docker compose logs -f       # 查看日志（未设置密码时，随机密码打印在这里）
+cp .env.example .env
+touch .cline-accounts.json override.md
 ```
 
-**3. 访问后台**：`http://<服务器IP>:3457/admin/`，用 `.env` 中的账号登录。
+Windows PowerShell：
 
-**更新**
-
-```bash
-git pull
-docker compose up -d --build
+```powershell
+Copy-Item .env.example .env
+New-Item .cline-accounts.json -ItemType File -Force
+New-Item override.md -ItemType File -Force
 ```
 
-### 管理后台登录
-
-管理后台默认启用登录页，账号密码通过 `.env` 配置：
+编辑 `.env`，设置后台登录信息：
 
 ```ini
 ADMIN_USER=admin
-ADMIN_PASSWORD=你的强密码
+ADMIN_PASSWORD=请换成强密码
 ```
 
-- 未设置 `ADMIN_PASSWORD` 时，服务启动会生成随机密码并打印到日志（`docker compose logs`）
-- 登录会话有效期 24 小时，后台左下角可退出登录
-- 代理 API（`/v1/...`）不受影响，仍使用后台生成的 API Key 鉴权
+> 🔒 如果 `ADMIN_PASSWORD` 留空，服务会在每次新建容器时生成随机密码，可通过容器日志查看。
 
-## 使用指南
+### 3️⃣ 拉取镜像并启动
 
-### 1. 添加 Cline 账号
-
-在管理后台 **账号管理** → **导入账号**，选择以下任一方式：
-
-- **OAuth 浏览器登录**：点击按钮弹出 WorkOS 登录窗口，完成后自动填入
-- **手动输入 Token**：输入已有账号的 Access Token
-- **批量文件导入**：上传包含账号数据的 JSON 文件
-
-在 **账号管理** 点击 **批量导出**，可下载与批量导入兼容的 JSON 文件；文件仅包含 `refreshToken` 和 `email`。该文件含登录凭据，请妥善保管。
-
-### 2. 配置客户端
-
-应用（如 Claude Code、Cline）配置为使用此代理：
-
-**OpenAI 格式（/v1/chat/completions）：**
-```
-Base URL: http://127.0.0.1:3457/v1
-API Key:  <在管理后台生成的 Key>
-Model:    cline-free/glm-5.2
+```bash
+docker compose pull
+docker compose up -d
+docker compose logs -f
 ```
 
-**Anthropic 格式（/v1/messages）：**
+Compose 会直接使用已经发布的镜像：
+
+```text
+ghcr.io/qcenjoyll/cline-proxy:latest
 ```
-Base URL: http://127.0.0.1:3457/v1
-API Key:  <在管理后台生成的 Key>
-Model:    cline-free/glm-5.2
+
+### 4️⃣ 打开管理后台
+
+```text
+http://<服务器IP>:3457/admin/
 ```
 
-### 3. API Key 管理
+本机部署可直接访问：<http://127.0.0.1:3457/admin/>
 
-在后台 **设置** → **API Keys** 中生成和管理。如果未配置任何 Key，代理允许无鉴权访问。
+## 🐳 使用 `docker run`
 
-### 4. System Prompt 覆盖
+先创建持久化文件：
 
-在项目目录下创建 `override.md`，内容将替换所有客户端请求的系统提示词。删除该文件则使用客户端自带的提示词。
+```bash
+touch .cline-accounts.json override.md
+```
 
-### 5. 请求头配置
-
-后台 **设置** → **请求头** 可编辑转发给上游的自定义请求头（如 `x-client-type: cline-cli`）。
-
-## 可用模型（实测）
-
-### 消耗账户额度
-
-| 模型 ID | 状态 | 说明 |
-|---------|:----:|------|
-| `deepseek/deepseek-v4-pro` | ✅ 可用 · 消耗额度 | DeepSeek V4 Pro |
-| `openai/gpt-4.1-nano` | ✅ 可用 · 消耗额度 | GPT-4.1 Nano |
-| `qwen/qwen3-235b-a22b` | ✅ 可用 · 消耗额度 | Qwen3 235B |
-| `meta-llama/llama-4-maverick` | ✅ 可用 · 消耗额度 | Llama 4 Maverick |
-| `deepseek/deepseek-v4-flash` | ⚠️ 响应为空 · 消耗额度 | API 返回 200 但内容为空 |
-| `google/gemini-2.5-flash` | ⚠️ 响应为空 · 消耗额度 | API 返回 200 但内容为空 |
-| `google/gemini-2.5-pro` | ⚠️ 响应为空 · 消耗额度 | API 返回 200 但内容为空 |
-
-### 不消耗账户额度
-
-| 模型 ID | 状态 | 说明 |
-|---------|:----:|------|
-| `cline-free/glm-5.2` | ✅ 可用 · 不消耗额度 | 免费模型，无限使用 |
-| `cline-pass/glm-5.2` | ❌ 403 · 不消耗额度 | 需要 `cline-pass` 订阅 |
-| `cline-pass/deepseek-v4-flash` | ❌ 403 · 不消耗额度 | 需要 `cline-pass` 订阅 |
-| `cline-pass/qwen3.7-max` | ❌ 403 · 不消耗额度 | 需要 `cline-pass` 订阅 |
-
-可在后台 **设置** → **默认模型** 的下拉框中选择请求未指定模型时使用的模型；选择会持久化保存。初始值为 `cline-free/glm-5.2`。
-
-### 添加自定义模型
-
-在后台 **设置** → **可用模型** 中输入上游支持的模型 ID 并添加。自定义模型会持久化到 `.cline-accounts.json`，同时出现在 OpenAI 兼容的 `/v1/models` 与 `/models` 接口中。内置的默认模型始终保留，不能被删除。
-
-## GitHub Actions 自动打包镜像
-
-仓库包含 `.github/workflows/docker-build.yml`，推送到 GitHub 后会自动构建镜像并发布到 GitHub Container Registry（ghcr.io）：
-
-`ghcr.io/qcenjoyll/cline-proxy`（注意镜像名全小写）
-
-触发方式：
-
-- 推送到 `main` / `master` 分支
-- 推送 `v*` 格式的 tag（如 `v1.0.0`）
-- 在仓库 Actions 页面手动触发
-
-构建产物：
-
-| 镜像 Tag | 说明 |
-|---------|------|
-| `ghcr.io/qcenjoyll/cline-proxy:latest` | 默认分支最新构建 |
-| `ghcr.io/qcenjoyll/cline-proxy:v1.0.0` | 对应 tag 版本 |
-| `ghcr.io/qcenjoyll/cline-proxy:<commit-sha>` | 每次构建 |
-
-镜像同时构建 `linux/amd64` 和 `linux/arm64`。首次推送后，到仓库 **Packages** 页面把镜像设为 Public（或保持 Private，在服务器上 `docker login ghcr.io` 后再拉取）。
-
-服务器直接拉镜像运行：
+然后启动容器：
 
 ```bash
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest
-docker run -d --name cline-proxy --restart unless-stopped \
+
+docker run -d \
+  --name cline-proxy \
+  --restart unless-stopped \
   -p 3457:3457 \
-  -e ADMIN_USER=admin -e ADMIN_PASSWORD=你的密码 \
-  -v /path/to/.cline-accounts.json:/app/.cline-accounts.json \
+  -e ADMIN_USER=admin \
+  -e ADMIN_PASSWORD=请换成强密码 \
+  -v "$(pwd)/.cline-accounts.json:/app/.cline-accounts.json" \
+  -v "$(pwd)/override.md:/app/override.md:ro" \
   ghcr.io/qcenjoyll/cline-proxy:latest
 ```
 
-## 项目结构
+## 🔄 更新镜像
 
-```
-├── main.go             入口，CLI 参数处理
-├── proxy.go            HTTP 服务，API 路由，协议转换，SSE 流式处理
-├── admin.go            管理后台 REST API 与登录鉴权
-├── admin_html.go       管理后台前端 HTML（含登录页，嵌入 Go 二进制）
-├── auth.go             WorkOS OAuth 登录与 Token 刷新
-├── pool.go             账号池管理、持久化、策略轮询
-├── types.go            数据结构定义
-├── capture.go          OAuth 信息捕获工具
-├── http.go             HTTP 客户端与工具函数
-├── Dockerfile          Docker 构建
-├── docker-compose.yml  Docker Compose 配置
-├── .env.example        后台登录账号配置示例
-└── override.md         可选的系统提示词覆盖文件
+```bash
+git pull
+docker compose pull
+docker compose up -d
 ```
 
-## 常见问题
+查看当前状态：
 
-- **后台打不开 / 连接被拒绝**：确认 `3457:3457` 端口映射正常、服务器防火墙放行了 3457；容器内服务监听 `0.0.0.0`，从宿主机访问 `http://<服务器IP>:3457/admin/`。
-- **登录密码是什么**：查看 `.env`；若未设置，`docker compose logs` 启动日志里有随机生成的密码。
-- **改了 `.env` 不生效**：环境变量在容器启动时注入，改完执行 `docker compose up -d` 重建容器。
-- **`.cline-accounts.json` 变成了目录**：该文件必须先创建再 `docker compose up`，否则 Docker 会把不存在的挂载源建成目录，账号保存时报 "is a directory"。
-- **忘记后台密码**：修改 `.env` 后 `docker compose up -d` 即可。
+```bash
+docker compose ps
+docker compose logs --tail=100
+```
 
----
+## 💾 持久化文件
 
-感谢 [LINUX DO](https://linux.do) 社区
+| 主机文件 | 容器路径 | 内容 | 是否必需 |
+|---|---|---|:---:|
+| `.cline-accounts.json` | `/app/.cline-accounts.json` | 账号、Refresh Token、API Key、自定义模型、默认模型 | ✅ |
+| `override.md` | `/app/override.md` | 自定义 System Prompt | 可选 |
+
+> ⚠️ `.cline-accounts.json` 含账号凭据，请限制文件权限，不要上传、分享或提交到 Git。
+
+当前版本不使用 `/app/data`，也不会再为该目录创建匿名卷。
+
+## 🖥️ 管理后台
+
+### 👤 账号管理
+
+后台支持以下导入方式：
+
+- 🔑 OAuth 浏览器登录
+- ✏️ 手动输入 Cline `refreshToken`
+- 📦 JSON 批量导入
+- 📄 从 `.json` / `.txt` 文件导入
+
+批量导入格式：
+
+```json
+[
+  {
+    "refreshToken": "xxx",
+    "email": "user@example.com"
+  }
+]
+```
+
+点击 **账号管理 → 批量导出** 可下载相同格式的 JSON 文件。
+
+> 🔐 导出文件包含 Refresh Token，应按密码文件处理。
+
+### 🔑 API Key
+
+在 **设置 → API 密钥管理** 中生成或删除代理 API Key。
+
+- 支持 `Authorization: Bearer <key>`
+- 支持 `x-api-key: <key>`
+- 未配置任何 Key 时，代理 API 默认允许无鉴权访问
+
+> 🛡️ 公网部署务必生成 API Key，并通过防火墙或反向代理限制访问。
+
+### 🧠 模型管理
+
+- 内置模型始终保留，不能删除
+- 可添加上游支持的自定义模型
+- 可通过下拉框选择默认模型
+- 自定义模型会出现在 `/v1/models` 和 `/models` 中
+- 客户端请求显式指定 `model` 时，优先使用客户端提供的模型
+
+内置模型：
+
+| 模型 ID | 类型 | 说明 |
+|---|---|---|
+| `cline-free/glm-5.2` | 免费 | 初始默认模型 |
+| `cline-pass/glm-5.2` | Pass | 需要对应订阅 |
+| `cline-pass/deepseek-v4-flash` | Pass | 需要对应订阅 |
+| `cline-pass/qwen3.7-max` | Pass | 需要对应订阅 |
+
+部分实测可用的额度模型：
+
+| 模型 ID | 状态 |
+|---|---|
+| `deepseek/deepseek-v4-pro` | ✅ 可用 |
+| `openai/gpt-4.1-nano` | ✅ 可用 |
+| `qwen/qwen3-235b-a22b` | ✅ 可用 |
+| `meta-llama/llama-4-maverick` | ✅ 可用 |
+| `deepseek/deepseek-v4-flash` | ⚠️ 可能返回空内容 |
+| `google/gemini-2.5-flash` | ⚠️ 可能返回空内容 |
+| `google/gemini-2.5-pro` | ⚠️ 可能返回空内容 |
+
+> 📌 模型可用性、额度消耗和订阅要求由上游决定，可能随时变化。
+
+### 📝 System Prompt 覆盖
+
+将自定义提示词写入 `override.md`，代理会使用该内容替换请求中的系统提示词。文件留空则继续使用客户端原始提示词。
+
+### 📨 自定义请求头
+
+在 **设置 → 请求头配置** 中可添加转发给上游的请求头，例如：
+
+```text
+x-client-type: cline-cli
+```
+
+## 🔌 客户端配置
+
+### OpenAI 兼容接口
+
+```text
+Base URL: http://127.0.0.1:3457/v1
+API Key:  <管理后台生成的 Key>
+Model:    cline-free/glm-5.2
+```
+
+请求端点：
+
+```text
+POST /v1/chat/completions
+```
+
+### Anthropic Messages 接口
+
+```text
+Base URL: http://127.0.0.1:3457/v1
+API Key:  <管理后台生成的 Key>
+Model:    cline-free/glm-5.2
+```
+
+请求端点：
+
+```text
+POST /v1/messages
+```
+
+### 其他端点
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/v1/models` | 获取模型列表 |
+| `GET` | `/v1/health` | 健康检查 |
+| `GET` | `/admin/` | 管理后台 |
+
+## 📦 镜像信息
+
+镜像地址：
+
+```text
+ghcr.io/qcenjoyll/cline-proxy
+```
+
+| Tag | 说明 |
+|---|---|
+| `latest` | 默认分支的最新版本 |
+| `1.0.0` | Git 标签 `v1.0.0` 对应的语义化版本 |
+| `sha-<commit>` | 对应某次提交 |
+
+镜像支持：
+
+- 🐧 `linux/amd64`
+- 🍓 `linux/arm64`
+
+GitHub Actions 会自动构建并发布镜像，普通使用者无需自行构建。
+
+## 🩺 常见问题
+
+<details>
+<summary><strong>后台打不开或提示连接被拒绝</strong></summary>
+
+确认容器正在运行、端口映射为 `3457:3457`，并检查服务器防火墙：
+
+```bash
+docker compose ps
+docker compose logs --tail=100
+```
+
+</details>
+
+<details>
+<summary><strong>后台登录密码是什么</strong></summary>
+
+优先查看 `.env` 中的 `ADMIN_PASSWORD`。如果留空，请从日志中查找自动生成的密码：
+
+```bash
+docker compose logs | grep ADMIN_PASSWORD
+```
+
+</details>
+
+<details>
+<summary><strong>修改 .env 后没有生效</strong></summary>
+
+环境变量只在创建容器时注入，执行：
+
+```bash
+docker compose up -d --force-recreate
+```
+
+</details>
+
+<details>
+<summary><strong>.cline-accounts.json 变成了目录</strong></summary>
+
+挂载前主机上不存在该文件，Docker 会将其创建为目录。删除错误目录，创建同名文件后重新创建容器：
+
+```bash
+touch .cline-accounts.json
+docker compose up -d --force-recreate
+```
+
+</details>
+
+<details>
+<summary><strong>为什么以前会出现 /app/data 匿名卷</strong></summary>
+
+旧镜像曾声明 `/app/data` 为 Volume，但程序实际不使用该目录。当前镜像已移除该声明；删除旧容器并更新镜像后不会再次创建。
+
+</details>
+
+<details>
+<summary><strong>更新后仍然是旧版本</strong></summary>
+
+先拉取最新镜像，再重新创建容器：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+</details>
+
+## 🙏 致谢
+
+感谢 [LINUX DO](https://linux.do) 社区。
