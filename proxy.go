@@ -417,8 +417,9 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
 	}
 
-	acc.LastUsed = time.Now()
-	acc.UsageCount++
+	poolMu.Lock()
+	bumpAccountUsage(acc, time.Now())
+	poolMu.Unlock()
 	savePool()
 	return resp, nil
 }

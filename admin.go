@@ -744,9 +744,11 @@ func handleAdminAccountReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset status to active and refresh token
+	// Reset status to active, clear both usage counters, and refresh token
 	acc.Status = "active"
 	acc.UsageCount = 0
+	acc.DailyUsageCount = 0
+	acc.DailyUsageDate = ""
 	if err := refreshAccountToken(acc); err != nil {
 		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "reset failed: " + err.Error()})
 		return

@@ -174,15 +174,39 @@ func listAccounts() []*Account {
 	for i, a := range p.Accounts {
 		// Don't expose tokens
 		result[i] = &Account{
-			AccountID:  a.AccountID,
-			Email:      a.Email,
-			Status:     a.Status,
-			LastUsed:   a.LastUsed,
-			UsageCount: a.UsageCount,
-			CreatedAt:  a.CreatedAt,
+			AccountID:       a.AccountID,
+			Email:           a.Email,
+			Status:          a.Status,
+			LastUsed:        a.LastUsed,
+			UsageCount:      a.UsageCount,
+			DailyUsageCount: a.DailyUsageCount,
+			DailyUsageDate:  a.DailyUsageDate,
+			CreatedAt:       a.CreatedAt,
 		}
 	}
 	return result
+}
+
+// currentDateKey returns the local calendar date for usage bucketing.
+// The daily counter resets when this value changes, so the rollover is
+// lazy: the first successful request after midnight starts a new day.
+func currentDateKey(now time.Time) string {
+	return now.Format("2006-01-02")
+}
+
+// bumpAccountUsage counts one successful request. The daily counter resets
+// automatically when the stored date no longer matches the current local
+// date, while UsageCount keeps accumulating for the account's lifetime.
+// Callers must hold poolMu.
+func bumpAccountUsage(acc *Account, now time.Time) {
+	today := currentDateKey(now)
+	if acc.DailyUsageDate != today {
+		acc.DailyUsageDate = today
+		acc.DailyUsageCount = 0
+	}
+	acc.DailyUsageCount++
+	acc.UsageCount++
+	acc.LastUsed = now
 }
 
 func addAccountFromDeviceAuth() (*Account, error) {

@@ -3,15 +3,17 @@ package main
 import "time"
 
 type Account struct {
-	AccountID    string    `json:"accountId"`
-	Email        string    `json:"email"`
-	RefreshToken string    `json:"refreshToken"`
-	AccessToken  string    `json:"-"`
-	ExpiresAt    int64     `json:"-"`
-	Status       string    `json:"status"` // active, cooldown, expired
-	LastUsed     time.Time `json:"lastUsed"`
-	UsageCount   int64     `json:"usageCount"`
-	CreatedAt    time.Time `json:"createdAt"`
+	AccountID       string    `json:"accountId"`
+	Email           string    `json:"email"`
+	RefreshToken    string    `json:"refreshToken"`
+	AccessToken     string    `json:"-"`
+	ExpiresAt       int64     `json:"-"`
+	Status          string    `json:"status"` // active, cooldown, expired
+	LastUsed        time.Time `json:"lastUsed"`
+	UsageCount      int64     `json:"usageCount"`
+	DailyUsageCount int64     `json:"dailyUsageCount"`
+	DailyUsageDate  string    `json:"dailyUsageDate,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
 }
 
 type AccountPool struct {

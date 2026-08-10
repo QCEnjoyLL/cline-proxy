@@ -141,10 +141,10 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
   <div class="section-body" style="padding:0">
     <table>
       <thead>
-        <tr><th>邮箱</th><th>状态</th><th>使用次数</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr>
+        <tr><th>邮箱</th><th>状态</th><th>今日使用</th><th>总使用次数</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr>
       </thead>
       <tbody id="accountTableBody">
-        <tr><td colspan="6" class="empty">加载中...</td></tr>
+        <tr><td colspan="7" class="empty">加载中...</td></tr>
       </tbody>
     </table>
   </div>
@@ -384,7 +384,7 @@ async function loadAccounts() {
     const list = d.data.accounts;
     const tbody = _('accountTableBody');
     if (!list || list.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无账号，前往 <a href="#" onclick="switchTab(\'import\')" style="color:var(--accent);cursor:pointer">导入账号</a> 页添加</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无账号，前往 <a href="#" onclick="switchTab(\'import\')" style="color:var(--accent);cursor:pointer">导入账号</a> 页添加</td></tr>';
       return;
     }
     const sn = { active: '活跃', cooldown: '冷却', expired: '已过期' };
@@ -394,6 +394,7 @@ async function loadAccounts() {
       return '<tr>' +
         '<td>' + esc(a.email) + '</td>' +
         '<td><span class="status ' + a.status + '"><span class="status-dot ' + a.status + '"></span>' + (sn[a.status] || a.status) + '</span></td>' +
+        '<td>' + (a.dailyUsageCount || 0) + '</td>' +
         '<td>' + (a.usageCount || 0) + '</td>' +
         '<td class="mono" style="font-size:11px">' + lu + '</td>' +
         '<td class="mono" style="font-size:11px">' + cr + '</td>' +
@@ -436,7 +437,7 @@ async function deleteAccount(id) {
 }
 
 async function resetAccount(id) {
-  if (!confirm('确定重置此账号？将清除使用计数并刷新 Token。')) return;
+  if (!confirm('确定重置此账号？将清除今日使用计数和总使用计数，并刷新 Token。')) return;
   try {
     await api('POST', '/accounts/reset', { accountId: id });
     toast('账号已重置', 'success');
