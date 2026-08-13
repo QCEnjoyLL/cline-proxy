@@ -17,11 +17,12 @@ type Account struct {
 }
 
 type AccountPool struct {
-	Accounts     []*Account `json:"accounts"`
-	CurrentIdx   int        `json:"currentIdx"`
-	Keys         []string   `json:"keys,omitempty"`
-	CustomModels []string   `json:"customModels,omitempty"`
-	DefaultModel string     `json:"defaultModel,omitempty"`
+	Accounts       []*Account `json:"accounts"`
+	CurrentIdx     int        `json:"currentIdx"`
+	Keys           []string   `json:"keys,omitempty"`
+	CustomModels   []string   `json:"customModels,omitempty"`
+	DisabledModels []string   `json:"disabledModels,omitempty"`
+	DefaultModel   string     `json:"defaultModel,omitempty"`
 }
 
 type LoginMethod int

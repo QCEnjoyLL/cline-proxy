@@ -693,14 +693,12 @@ async function loadModels() {
       const tag = document.createElement('span');
       tag.className = 'model-tag ' + (m.cost || 'free');
       tag.appendChild(document.createTextNode(m.id));
-      if (m.custom) {
-        const remove = document.createElement('button');
-        remove.type = 'button';
-        remove.title = '\u5220\u9664\u81ea\u5b9a\u4e49\u6a21\u578b';
-        remove.textContent = '\u2715';
-        remove.addEventListener('click', () => deleteCustomModel(m.id));
-        tag.appendChild(remove);
-      }
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.title = '\u5220\u9664\u6a21\u578b';
+      remove.textContent = '\u2715';
+      remove.addEventListener('click', () => deleteCustomModel(m.id));
+      tag.appendChild(remove);
       list.appendChild(tag);
     });
     if (!models.length) list.innerHTML = '<div class="empty">\u6682\u65e0\u6a21\u578b</div>';

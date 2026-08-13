@@ -73,27 +73,104 @@ func TestCustomModelRejectsDuplicatesAndInvalidIDs(t *testing.T) {
 	}
 }
 
-func TestDeleteCustomModelCannotDeleteDefaults(t *testing.T) {
+func TestDeletePresetModelsAllowedAndRestorable(t *testing.T) {
 	useTemporaryPool(t)
 
-	if err := deleteCustomModel(defaultModels[0].ID); !errors.Is(err, errDefaultModel) {
-		t.Fatalf("deleting default model error = %v, want errDefaultModel", err)
+	preset := defaultModels[0].ID
+	if err := deleteCustomModel(preset); err != nil {
+		t.Fatalf("delete preset model: %v", err)
+	}
+	for _, m := range allModels() {
+		if m.ID == preset {
+			t.Fatalf("deleted preset model still listed: %+v", m)
+		}
+	}
+	if err := deleteCustomModel(preset); !errors.Is(err, errModelNotFound) {
+		t.Fatalf("deleting already-deleted preset model error = %v, want errModelNotFound", err)
 	}
 	if err := deleteCustomModel("missing/model"); !errors.Is(err, errModelNotFound) {
 		t.Fatalf("deleting missing model error = %v, want errModelNotFound", err)
 	}
+
+	// Re-adding the preset ID restores it.
+	if id, err := addCustomModel(preset); err != nil || id != preset {
+		t.Fatalf("restore preset model: id=%q err=%v", id, err)
+	}
+	found := false
+	for _, m := range allModels() {
+		if m.ID == preset {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("restored preset model %q not listed", preset)
+	}
+	if _, err := addCustomModel(preset); !errors.Is(err, errModelExists) {
+		t.Fatalf("re-adding active preset model error = %v, want errModelExists", err)
+	}
+
+	// Custom models still work as before.
 	if _, err := addCustomModel("provider/model"); err != nil {
 		t.Fatalf("add custom model: %v", err)
 	}
-	poolMu.Lock()
-	pool.CustomModels = append(pool.CustomModels, "provider/model")
-	poolMu.Unlock()
 	if err := deleteCustomModel("provider/model"); err != nil {
 		t.Fatalf("delete custom model: %v", err)
 	}
 	if got := len(allModels()); got != len(defaultModels) {
 		t.Fatalf("got %d models after deletion, want %d", got, len(defaultModels))
 	}
+}
+
+func TestDeletePresetModelsPersistsAcrossReload(t *testing.T) {
+	useTemporaryPool(t)
+
+	preset := defaultModels[0].ID
+	if err := deleteCustomModel(preset); err != nil {
+		t.Fatalf("delete preset model: %v", err)
+	}
+	pool = nil // Force a reload from disk.
+	for _, m := range allModels() {
+		if m.ID == preset {
+			t.Fatalf("deleted preset model survived reload: %+v", m)
+		}
+	}
+	if id, err := addCustomModel(preset); err != nil || id != preset {
+		t.Fatalf("restore preset after reload: id=%q err=%v", id, err)
+	}
+	pool = nil
+	found := false
+	for _, m := range allModels() {
+		if m.ID == preset {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("restored preset model %q did not survive reload", preset)
+	}
+}
+
+func TestDeleteDefaultModelFallsBackToAvailableModel(t *testing.T) {
+	useTemporaryPool(t)
+
+	// Default points at the first preset; deleting it must fall back to the
+	// next available model instead of the deleted one.
+	preset := defaultModels[0].ID
+	if got := getDefaultModel(); got != preset {
+		t.Fatalf("initial default model = %q, want %q", got, preset)
+	}
+	if err := deleteCustomModel(preset); err != nil {
+		t.Fatalf("delete default preset model: %v", err)
+	}
+	got := getDefaultModel()
+	if got == preset || got == "" {
+		t.Fatalf("default after deleting %q = %q, want a different available model", preset, got)
+	}
+	for _, m := range allModels() {
+		if m.ID == got {
+			return
+		}
+	}
+	t.Fatalf("fallback default %q is not listed", got)
 }
 
 func TestCustomModelChangesRollBackWhenPersistenceFails(t *testing.T) {
