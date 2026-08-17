@@ -170,8 +170,13 @@ func listAccounts() []*Account {
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
+	today := currentDateKey(time.Now())
 	result := make([]*Account, len(p.Accounts))
 	for i, a := range p.Accounts {
+		dailyUsageCount := a.DailyUsageCount
+		if a.DailyUsageDate != today {
+			dailyUsageCount = 0
+		}
 		// Don't expose tokens
 		result[i] = &Account{
 			AccountID:       a.AccountID,
@@ -179,7 +184,7 @@ func listAccounts() []*Account {
 			Status:          a.Status,
 			LastUsed:        a.LastUsed,
 			UsageCount:      a.UsageCount,
-			DailyUsageCount: a.DailyUsageCount,
+			DailyUsageCount: dailyUsageCount,
 			DailyUsageDate:  a.DailyUsageDate,
 			CreatedAt:       a.CreatedAt,
 		}
@@ -187,9 +192,8 @@ func listAccounts() []*Account {
 	return result
 }
 
-// currentDateKey returns the local calendar date for usage bucketing.
-// The daily counter resets when this value changes, so the rollover is
-// lazy: the first successful request after midnight starts a new day.
+// currentDateKey returns the local calendar date for usage bucketing. Stored
+// counters roll over on the next usage; account listings report stale ones as zero.
 func currentDateKey(now time.Time) string {
 	return now.Format("2006-01-02")
 }

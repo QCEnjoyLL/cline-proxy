@@ -89,6 +89,68 @@ func TestBumpAccountUsagePersistsThroughReload(t *testing.T) {
 	}
 }
 
+func TestAdminAccountsReportsZeroForStaleDailyUsage(t *testing.T) {
+	useTemporaryPool(t)
+
+	lastUsed := time.Now().AddDate(0, 0, -2)
+	acc := &Account{
+		AccountID:       "acc_stale",
+		Email:           "stale@example.com",
+		Status:          "active",
+		LastUsed:        lastUsed,
+		UsageCount:      44,
+		DailyUsageCount: 2,
+		DailyUsageDate:  currentDateKey(lastUsed),
+	}
+	addAccount(acc)
+
+	response := httptest.NewRecorder()
+	handleAdminAccounts(response, httptest.NewRequest(http.MethodGet, "/admin/api/accounts", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("accounts status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Accounts []*Account `json:"accounts"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode accounts response: %v", err)
+	}
+	if len(body.Data.Accounts) != 1 {
+		t.Fatalf("listed accounts = %d, want 1", len(body.Data.Accounts))
+	}
+	listed := body.Data.Accounts[0]
+	if listed.DailyUsageCount != 0 {
+		t.Fatalf("listed stale daily usage = %d, want 0", listed.DailyUsageCount)
+	}
+	if listed.UsageCount != 44 {
+		t.Fatalf("listed total usage = %d, want 44", listed.UsageCount)
+	}
+	if !listed.LastUsed.Equal(lastUsed) {
+		t.Fatalf("listed last used = %v, want %v", listed.LastUsed, lastUsed)
+	}
+	if acc.DailyUsageCount != 2 {
+		t.Fatalf("listing mutated stored daily usage = %d, want 2", acc.DailyUsageCount)
+	}
+}
+
+func TestListAccountsKeepsCurrentDailyUsage(t *testing.T) {
+	useTemporaryPool(t)
+
+	acc := &Account{
+		AccountID:       "acc_current",
+		DailyUsageCount: 3,
+		DailyUsageDate:  currentDateKey(time.Now()),
+	}
+	addAccount(acc)
+
+	accounts := listAccounts()
+	if got := accounts[0].DailyUsageCount; got != 3 {
+		t.Fatalf("listed current daily usage = %d, want 3", got)
+	}
+}
+
 func TestManualResetClearsBothUsageCounters(t *testing.T) {
 	useTemporaryPool(t)
 
