@@ -89,6 +89,30 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
 .model-tag.custom{border:1px solid var(--accent);color:var(--accent)}
 .model-tag button{border:0;background:none;color:inherit;cursor:pointer;padding:0 0 0 6px;font-size:12px}
 .justify-between{display:flex;justify-content:space-between;align-items:center}
+/* ===== 模型库 ===== */
+.mgroup{margin-bottom:26px}
+.mgroup-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding-bottom:9px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.mgroup-head .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.mgroup-head h3{font-size:15px;font-weight:600;margin:0}
+.mgroup-head .gsub{font-size:12px;color:var(--text2)}
+.mgroup-head .gcount{font-size:12px;color:var(--text2);margin-left:auto;white-space:nowrap}
+.mcards{display:flex;flex-wrap:wrap;gap:8px}
+.mcard{display:flex;flex-direction:column;gap:2px;max-width:100%;padding:7px 11px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:background .15s,border-color .15s}
+.mcard:hover{border-color:var(--accent)}
+.mcard:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mcard .mrow{display:flex;align-items:center;gap:7px;min-width:0}
+.mcard .mname{font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:12.5px;font-weight:600;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mcard .mid{font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mcard .mdesc{display:none;font-size:11.5px;color:var(--text2);line-height:1.45;max-width:52ch;margin-top:2px}
+body.show-mdesc .mcard .mdesc{display:block}
+.mcard .mini{border:0;background:none;color:var(--text2);cursor:pointer;padding:1px 4px;border-radius:4px;font-size:11px;line-height:1.4}
+.mcard .mini:hover{color:var(--text);background:var(--bg)}
+.mcard .mini.add:hover{color:var(--green)}
+.mcard.installed{border-color:var(--green);background:rgba(63,185,80,.07)}
+.mcard.installed .mname{color:var(--green)}
+.mcard.installed .mini.add{display:none}
+.badge{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:1px 5px;border-radius:4px;background:#3d2e00;color:var(--yellow)}
+.badge.ok{background:#0e4429;color:var(--green)}
 </style>
 </head>
 <body>
@@ -96,6 +120,7 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
 <div class="sidebar">
 <h1><span>⚡</span>Cline 代理</h1>
 <div class="nav-item active" data-tab="dashboard"><span>📊</span> 仪表盘</div>
+<div class="nav-item" data-tab="models"><span>🧠</span> 模型库</div>
 <div class="nav-item" data-tab="accounts"><span>👤</span> 账号管理</div>
 <div class="nav-item" data-tab="import"><span>📥</span> 导入账号</div>
 <div class="nav-item" data-tab="settings"><span>⚙️</span> 设置</div>
@@ -124,6 +149,35 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
     <button class="btn" onclick="document.getElementById('fileInput').click()">📄 从文件导入</button>
     <input type="file" id="fileInput" accept=".json,.txt" style="display:none" onchange="handleFileImport(event)">
     <button class="btn" onclick="switchTab('settings');generateKey()">🔑 生成 API 密钥</button>
+  </div>
+</div>
+</div>
+<div id="tab-models" class="tab-panel" style="display:none">
+<div class="flex justify-between" style="margin-bottom:16px">
+  <h2>🧠 模型库</h2>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <span id="mStatus" style="font-size:12px;color:var(--text2);align-self:center"></span>
+    <button class="btn btn-sm" id="mDescBtn" onclick="toggleModelDesc()">显示描述</button>
+    <button class="btn btn-sm" id="mRefreshBtn" onclick="loadRecommended(true)">🔄 刷新数据</button>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">🧩 可用模型分组</div>
+  <div class="section-body">
+    <p style="color:var(--text2);margin-bottom:12px">
+      数据来自 <span class="mono">api.cline.bot</span>（由代理服务端抓取，浏览器直连会被 CORS 拦截）。
+      点击分组标题右侧的「全部添加」可一键加入该组所有模型，点击单个模型卡片可单独添加，重复模型不会重复添加。
+    </p>
+    <div id="recommendedGroups">加载中...</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">✅ 已启用的模型</div>
+  <div class="section-body">
+    <p style="color:var(--text2);margin-bottom:12px">默认模型始终保留；自定义模型会出现在 <span class="mono">/v1/models</span> 中。点击标签上的 ✕ 可移除。</p>
+    <div id="modelsList">加载中...</div>
   </div>
 </div>
 </div>
@@ -232,17 +286,20 @@ textarea{resize:vertical;min-height:80px;font-family:'Cascadia Code','Fira Code'
 </div>
 
 <div class="section">
-  <div class="section-title">🧠 可用模型</div>
+  <div class="section-title">🧠 手工添加模型</div>
   <div class="section-body">
     <div class="form-row">
       <div class="field">
-        <label>&#x81EA;&#x5B9A;&#x4E49;&#x6A21;&#x578B; ID</label>
+        <label>自定义模型 ID</label>
         <input type="text" id="customModelId" maxlength="200" placeholder="openai/gpt-4.1-nano">
       </div>
-      <button class="btn btn-primary" onclick="addCustomModel()">&#x2795; &#x6DFB;&#x52A0;&#x6A21;&#x578B;</button>
+      <button class="btn btn-primary" onclick="addCustomModel()">➕ 添加模型</button>
     </div>
-    <p style="color:var(--text2);margin-bottom:10px">&#x9ED8;&#x8BA4;&#x6A21;&#x578B;&#x59CB;&#x7EC8;&#x4FDD;&#x7559;&#xFF1B;&#x81EA;&#x5B9A;&#x4E49;&#x6A21;&#x578B;&#x4F1A;&#x51FA;&#x73B0;&#x5728; /v1/models &#x4E2D;&#x3002;</p>
-    <div id="modelsList">加载中...</div>
+    <p style="color:var(--text2);margin-bottom:10px">
+      默认模型始终保留；自定义模型会出现在 <span class="mono">/v1/models</span> 中。
+      想从 Cline 官方清单里挑选，请到 <a href="#" onclick="switchTab('models');return false;" style="color:var(--accent)"> 模型库</a>。
+    </p>
+    <div class="models-tags" id="settingsModelsList">加载中...</div>
   </div>
 </div>
 
@@ -327,6 +384,7 @@ document.querySelectorAll('.nav-item').forEach(el => {
     _('tab-' + el.dataset.tab).style.display = 'block';
     if (el.dataset.tab === 'dashboard') { loadStats(); loadAccounts(); }
     if (el.dataset.tab === 'accounts') loadAccounts();
+    if (el.dataset.tab === 'models') { loadRecommended(false); loadModels(); }
     if (el.dataset.tab === 'settings') { loadKeys(); loadModels(); loadConfig(); }
   });
 });
@@ -339,6 +397,7 @@ function switchTab(name) {
   _('tab-' + name).style.display = 'block';
   if (name === 'dashboard') { loadStats(); loadAccounts(); }
   if (name === 'accounts') loadAccounts();
+  if (name === 'models') { loadRecommended(false); loadModels(); }
   if (name === 'settings') { loadKeys(); loadModels(); }
 }
 
@@ -687,7 +746,7 @@ async function loadModels() {
       select.appendChild(option);
     });
     if (models.some(m => m.id === selectedModel)) select.value = selectedModel;
-    const list = _('modelsList');
+    const list = _('settingsModelsList');
     list.innerHTML = '';
     models.forEach(m => {
       const tag = document.createElement('span');
@@ -702,7 +761,10 @@ async function loadModels() {
       list.appendChild(tag);
     });
     if (!models.length) list.innerHTML = '<div class="empty">\u6682\u65e0\u6a21\u578b</div>';
-  } catch (e) { _('modelsList').textContent = '\u52a0\u8f7d\u5931\u8d25'; }
+    // 同步模型库的「已启用」标记，避免两处状态不一致
+    mInstalled = models.map(m => m.id);
+    if (mDataGroups.length) renderRecommended();
+  } catch (e) { _('settingsModelsList').textContent = '加载失败'; }
 }
 
 async function addCustomModel() {
@@ -729,6 +791,206 @@ async function deleteCustomModel(id) {
 _('customModelId').addEventListener('keydown', e => {
   if (e.key === 'Enter') addCustomModel();
 });
+
+// ========== 模型库（推荐模型清单） ==========
+
+// 分组显示名与主题色；未登记的分组按原始 key 展示。
+const MGROUPS = {
+  recommended: { title: '推荐模型', sub: '官方主推', color: '#d29922' },
+  free: { title: 'free 模型', sub: '免费额度', color: '#3fb950' },
+  clinePass: { title: 'Cline Pass', sub: '订阅套餐内', color: '#a371f7' },
+  clineCloud: { title: 'Cline Cloud', sub: '云端托管', color: '#58a6ff' }
+};
+
+let mInstalled = [];      // 已启用（含默认）的模型 ID
+let mDataGroups = [];     // 最近一次取到的分组数据
+let mFetchedAt = 0;       // 数据抓取时间戳
+let mAutoTimer = null;    // 自动刷新定时器
+
+const AUTO_REFRESH_MS = 10 * 60 * 1000;   // 页面可见时每 10 分钟自动刷新一次
+
+function relTime(ts) {
+  if (!ts) return '未知';
+  const diff = Date.now() - ts;
+  if (diff < 45e3) return '刚刚';
+  const m = Math.floor(diff / 60e3);
+  if (m < 60) return m + ' 分钟前';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + ' 小时前';
+  return Math.floor(h / 24) + ' 天前';
+}
+
+// force=true 时要求服务端回源刷新（忽略服务端缓存）
+async function loadRecommended(force) {
+  const btn = _('mRefreshBtn');
+  const box = _('recommendedGroups');
+  if (force) {
+    btn.disabled = true;
+    btn.textContent = '刷新中...';
+    if (!mDataGroups.length) box.innerHTML = '<div class="empty">正在抓取…</div>';
+  }
+  try {
+    const d = await api('GET', '/recommended-models' + (force ? '?refresh=1' : ''));
+    mDataGroups = d.data.groups || [];
+    mInstalled = d.data.installed || [];
+    mFetchedAt = d.data.fetchedAt || 0;
+    renderRecommended();
+    if (force) toast('模型数据已刷新', 'success');
+    if (d.data.stale && d.error) {
+      toast('上游抓取失败，显示上次缓存: ' + d.error, 'error');
+    }
+    startAutoRefresh();
+  } catch (e) {
+    box.innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>';
+    _('mStatus').textContent = '';
+    if (force) toast('刷新失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 刷新数据';
+  }
+}
+
+function renderRecommended() {
+  const box = _('recommendedGroups');
+  const groups = mDataGroups;
+  if (!groups.length) {
+    box.innerHTML = '<div class="empty">暂无数据，点击右上角「刷新数据」</div>';
+    _('mStatus').textContent = '';
+    return;
+  }
+
+  const installed = new Set(mInstalled);
+  let total = 0;
+
+  box.innerHTML = groups.map(g => {
+    const meta = MGROUPS[g.key] || { title: g.key, sub: '', color: 'var(--text2)' };
+    const models = g.models || [];
+    total += models.length;
+    // 该组中尚未添加的模型数量，用于决定「全部添加」是否可点
+    const pending = models.filter(m => !installed.has(m.id)).length;
+
+    const cards = models.map(m => {
+      const has = installed.has(m.id);
+      const tags = (m.tags || []).filter(Boolean).map(t =>
+        '<span class="badge">' + esc(t) + '</span>').join('');
+      const name = m.name || m.id;
+      const tip = [name, m.id, m.description, '', has ? '已启用 · 点击复制 ID' : '点击添加'].filter(Boolean).join('\n');
+      return '<div class="mcard' + (has ? ' installed' : '') + '" role="button" tabindex="0"' +
+        ' data-id="' + esc(m.id) + '" data-installed="' + (has ? '1' : '0') + '"' +
+        ' title="' + esc(tip) + '">' +
+        '<div class="mrow">' +
+          '<span class="mname">' + esc(name) + '</span>' +
+          (m.id && m.id !== name ? '<span class="mid">' + esc(m.id) + '</span>' : '') +
+          tags +
+          '<span class="mini add" data-act="add" title="添加此模型">＋</span>' +
+          '<span class="mini" data-act="copy" title="复制模型 ID">⧉</span>' +
+        '</div>' +
+        (m.description ? '<div class="mdesc">' + esc(m.description) + '</div>' : '') +
+      '</div>';
+    }).join('');
+
+    return '<div class="mgroup" data-key="' + esc(g.key) + '">' +
+      '<div class="mgroup-head">' +
+        '<span class="dot" style="background:' + meta.color + '"></span>' +
+        '<h3>' + esc(meta.title) + '</h3>' +
+        (meta.sub ? '<span class="gsub">（' + esc(meta.sub) + '）</span>' : '') +
+        '<span class="gcount">共 ' + models.length + ' 个' +
+          (pending ? ' · 待添加 ' + pending : ' · 已全部添加') + '</span>' +
+        '<button class="btn btn-sm' + (pending ? ' btn-success' : '') + '"' +
+          (pending ? '' : ' disabled') +
+          ' onclick="addGroup(\'' + g.key + '\')">' +
+          (pending ? '➕ 全部添加 (' + pending + ')' : '✓ 已全部添加') + '</button>' +
+      '</div>' +
+      '<div class="mcards">' + cards + '</div>' +
+    '</div>';
+  }).join('');
+
+  _('mStatus').textContent = '共 ' + total + ' 个 · 已启用 ' + mInstalled.length +
+    ' · 数据 ' + relTime(mFetchedAt);
+}
+
+// 卡片点击：已启用的复制 ID，未启用的直接添加；点 ⧉ 始终复制。
+async function onModelCardClick(e) {
+  const card = e.target.closest('.mcard');
+  if (!card) return;
+  const id = card.dataset.id || '';
+  const act = e.target.dataset.act;
+  if (act === 'copy' || card.dataset.installed === '1') {
+    await copyText(id);
+    return;
+  }
+  await addModels([id], '模型已添加');
+}
+
+async function onModelCardKey(e) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.mcard');
+  if (!card) return;
+  e.preventDefault();
+  const id = card.dataset.id || '';
+  if (card.dataset.installed === '1') { await copyText(id); return; }
+  await addModels([id], '模型已添加');
+}
+
+// 一键添加一个分组的全部模型（已存在的由服务端跳过）
+function addGroup(key) {
+  const g = mDataGroups.find(x => x.key === key);
+  if (!g) return;
+  const installed = new Set(mInstalled);
+  const ids = (g.models || []).map(m => m.id).filter(id => id && !installed.has(id));
+  if (!ids.length) { toast('该分组模型已全部添加', 'info'); return; }
+  const title = (MGROUPS[key] || {}).title || key;
+  addModels(ids, title + ' 分组已添加');
+}
+
+// 统一走批量接口；服务端对已存在的 ID 返回 skipped，不会重复添加。
+async function addModels(ids, okMsg) {
+  if (!ids || !ids.length) return;
+  try {
+    const d = await api('POST', '/models/batch', { ids });
+    const added = d.data.added || [];
+    const skipped = d.data.skipped || [];
+    const failed = d.data.failed || {};
+    mInstalled = mInstalled.concat(added);
+    renderRecommended();
+    await loadModels();
+
+    const parts = [];
+    if (added.length) parts.push('新增 ' + added.length + ' 个');
+    if (skipped.length) parts.push('已存在 ' + skipped.length + ' 个');
+    const failCount = Object.keys(failed).length;
+    if (failCount) parts.push('失败 ' + failCount + ' 个');
+
+    if (failCount && !added.length) {
+      toast('添加失败: ' + Object.values(failed)[0], 'error');
+    } else if (!added.length) {
+      toast('这些模型都已存在，未重复添加', 'info');
+    } else {
+      toast((okMsg || '已添加') + '（' + parts.join('，') + '）', 'success');
+    }
+  } catch (e) {
+    toast('添加失败: ' + e.message, 'error');
+  }
+}
+
+function toggleModelDesc() {
+  const on = document.body.classList.toggle('show-mdesc');
+  _('mDescBtn').textContent = on ? '隐藏描述' : '显示描述';
+}
+
+// 自动刷新：仅在「模型库」标签可见且页面处于前台时触发，避免无谓请求。
+function startAutoRefresh() {
+  if (mAutoTimer) return;
+  mAutoTimer = setInterval(() => {
+    const panel = _('tab-models');
+    if (!panel || panel.style.display === 'none') return;
+    if (document.hidden) return;
+    loadRecommended(true);
+  }, AUTO_REFRESH_MS);
+}
+
+_('recommendedGroups').addEventListener('click', onModelCardClick);
+_('recommendedGroups').addEventListener('keydown', onModelCardKey);
 
 // ========== 配置加载 ==========
 async function loadConfig() {
@@ -762,6 +1024,8 @@ loadAccounts();
 loadKeys();
 loadModels();
 loadConfig();
+// 预取模型库数据（服务端有 30 分钟缓存，不会每次都回源）
+loadRecommended(false);
 setInterval(() => { loadStats(); }, 10000);
 </script>
 </body>

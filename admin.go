@@ -248,7 +248,9 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/keys/generate", corsHandler(handleAdminGenerateKey))
 	mux.HandleFunc("/admin/api/keys/delete", corsHandler(handleAdminDeleteKey))
 	mux.HandleFunc("/admin/api/models", corsHandler(handleAdminModels))
+	mux.HandleFunc("/admin/api/models/batch", corsHandler(handleAdminModelsBatchAdd))
 	mux.HandleFunc("/admin/api/models/delete", corsHandler(handleAdminModelDelete))
+	mux.HandleFunc("/admin/api/recommended-models", corsHandler(handleAdminRecommendedModels))
 	mux.HandleFunc("/admin/api/config", corsHandler(handleAdminConfig))
 	mux.HandleFunc("/admin/api/config/update", corsHandler(handleAdminUpdateConfig))
 }
