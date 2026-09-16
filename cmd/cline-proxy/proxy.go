@@ -64,7 +64,7 @@ func startProxy(port int) error {
 	mux.HandleFunc("/v1/health", corsHandler(func(w http.ResponseWriter, r *http.Request) {
 		info := map[string]any{
 			"status":       "ok",
-			"version":      "go-1.1",
+			"version":      versionLabel(),
 			"activeAccounts": activeCount,
 		}
 		writeJSON(w, http.StatusOK, info)
@@ -72,7 +72,7 @@ func startProxy(port int) error {
 	mux.HandleFunc("/health", corsHandler(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":         "ok",
-			"version":        "go-1.1",
+			"version":        versionLabel(),
 			"activeAccounts": activeCount,
 		})
 	}))
@@ -237,7 +237,7 @@ func startProxy(port int) error {
 
 	fmt.Println("")
 	fmt.Println(strings.Repeat("=", 58))
-	fmt.Println("  Cline Go Proxy v1.0 - No CLI Required")
+	fmt.Printf("  Cline Go Proxy %s - No CLI Required\n", versionLabel())
 	fmt.Println(strings.Repeat("=", 58))
 	fmt.Printf("  http://%s\n", addr)
 	fmt.Printf("  http://%s/v1\n", addr)

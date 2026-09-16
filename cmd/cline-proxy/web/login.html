@@ -128,6 +128,8 @@ button:disabled:active{transform:none}
 .error.show{display:block;animation:errIn var(--t-base) var(--ease-out)}
 @keyframes errIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .hint{margin-top:20px;text-align:center;font-size:12px;color:var(--text2);line-height:1.6}
+.ver{margin-top:14px;text-align:center;font-size:11.5px;color:var(--text2);letter-spacing:.02em}
+.ver .mono{font-family:'Cascadia Code','Fira Code',Consolas,monospace}
 .hint code{background:var(--bg3);padding:2px 7px;border-radius:5px;font-size:11.5px;font-family:'Cascadia Code','Fira Code',Consolas,monospace}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{
@@ -190,6 +192,7 @@ button:disabled:active{transform:none}
     </form>
     <div class="hint">默认账号 <code>admin</code> · 密码未设置时见启动日志</div>
   </div>
+  <div class="ver">Cline 代理 <span class="mono">__CLINE_PROXY_VERSION__</span></div>
 </div>
 <script>
 (function(){

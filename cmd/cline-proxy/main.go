@@ -17,8 +17,13 @@ func main() {
 	addAccount := flag.Bool("add-account", false, "Add a new account via OAuth to the pool")
 	showList := flag.Bool("list", false, "List all accounts in the pool")
 	startMode := flag.Bool("start", false, "Build, start proxy, and open admin panel in browser")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(versionLabel())
+		return
+	}
 	if *startMode {
 		buildAndStart(*port)
 		return

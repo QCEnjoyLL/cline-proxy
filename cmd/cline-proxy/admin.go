@@ -152,7 +152,7 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(adminLoginHTML))
+		w.Write([]byte(renderPage(adminLoginHTML)))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -262,7 +262,7 @@ func adminStaticHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/admin/" || r.URL.Path == "/admin" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(adminHTML))
+		w.Write([]byte(renderPage(adminHTML)))
 		return
 	}
 	http.NotFound(w, r)
@@ -1002,7 +1002,7 @@ func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
 		"address":         "127.0.0.1:3457",
 		"strategy":        cfg.Strategy,
-		"version":         "go-1.1",
+		"version":         versionLabel(),
 		"poolPath":        poolPath,
 		"defaultModel":    getDefaultModel(),
 		"headers":         cfg.Headers,
@@ -1210,7 +1210,15 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 			"expired":  expired,
 			"disabled": disabled,
 			"strategy": cfg.Strategy,
-			"version":  "go-1.1",
+			"version":  versionLabel(),
 		},
 	})
+}
+
+// renderPage 把页面里的版本号占位符换成实际版本。
+//
+// 页面是 go:embed 的静态 HTML，没有模板引擎；不替换的话界面上会直接显示
+// __CLINE_PROXY_VERSION__ 这个 token。
+func renderPage(html string) string {
+	return strings.ReplaceAll(html, versionPlaceholder, versionLabel())
 }
