@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -157,5 +158,105 @@ func TestLoadPoolTreatsEmptyFileAsEmptyPool(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("空文件不应产生备份，实际 %v", matches)
+	}
+}
+
+// rename 不被允许时必须退回原地写，而不是让每一次保存都失败。
+//
+// 真实触发场景：docker-compose 把账号池按单文件 bind mount 挂进容器
+// （./.cline-accounts.json:/app/.cline-accounts.json），此时 rename 覆盖挂载点
+// 返回 EBUSY「device or resource busy」。旧实现下禁用/启用账号、改配置、
+// 甚至每次代理请求的用量落盘都会报错。
+func TestWritePoolFileFallsBackWhenRenameUnsupported(t *testing.T) {
+	useTemporaryPool(t)
+
+	original := renameFile
+	renameFile = func(_, _ string) error { return syscall.EBUSY }
+	t.Cleanup(func() {
+		renameFile = original
+		atomicReplaceUnsupportedFor = ""
+	})
+
+	if err := savePool(); err != nil {
+		t.Fatalf("rename 不可用时应退回原地写，实际报错: %v", err)
+	}
+	if atomicReplaceUnsupportedFor != poolPath {
+		t.Fatal("应记住该路径不支持原子替换，避免每次落盘都白写临时文件")
+	}
+
+	// 内容确实写进去了
+	data, err := os.ReadFile(poolPath)
+	if err != nil {
+		t.Fatalf("read pool file: %v", err)
+	}
+	var p AccountPool
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatalf("原地写的内容不是完整 JSON: %v (content=%q)", err, data)
+	}
+
+	// 退回路径上第二次保存也必须成功
+	if err := setCooldownMinutes(7); err != nil {
+		t.Fatalf("第二次保存失败: %v", err)
+	}
+	if got := cooldownMinutes(); got != 7 {
+		t.Fatalf("cooldownMinutes = %d, want 7", got)
+	}
+
+	// 不能留下临时文件
+	matches, err := filepath.Glob(poolPath + ".*.tmp")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("rename 失败后应清掉临时文件，实际残留 %v", matches)
+	}
+}
+
+// 退回原地写必须真的截断：新内容比旧内容短时不能留下旧字节尾巴。
+//
+// 否则文件变成「新 JSON + 旧尾巴」，解析失败——下次启动 loadPool 会把它
+// 当成损坏文件备份走，用户看到的是「账号全没了」。
+func TestInPlaceWriteTruncatesStaleTail(t *testing.T) {
+	useTemporaryPool(t)
+
+	original := renameFile
+	renameFile = func(_, _ string) error { return syscall.EBUSY }
+	t.Cleanup(func() {
+		renameFile = original
+		atomicReplaceUnsupportedFor = ""
+	})
+
+	for _, id := range []string{"a/one", "a/two", "a/three", "a/four", "a/five"} {
+		if _, err := addCustomModel(id); err != nil {
+			t.Fatalf("addCustomModel(%s): %v", id, err)
+		}
+	}
+	long, err := os.ReadFile(poolPath)
+	if err != nil {
+		t.Fatalf("read pool file: %v", err)
+	}
+
+	// 注意：loadPool() 自己会取 poolMu，必须先取到指针再上锁。
+	pl := loadPool()
+	poolMu.Lock()
+	pl.CustomModels = []string{"a/one"}
+	poolMu.Unlock()
+	if err := savePool(); err != nil {
+		t.Fatalf("savePool: %v", err)
+	}
+
+	short, err := os.ReadFile(poolPath)
+	if err != nil {
+		t.Fatalf("read pool file: %v", err)
+	}
+	if len(short) >= len(long) {
+		t.Fatalf("测试前提不成立：新内容 %d 字节，旧内容 %d 字节", len(short), len(long))
+	}
+	var p AccountPool
+	if err := json.Unmarshal(short, &p); err != nil {
+		t.Fatalf("短内容未截断干净（残留旧字节）：%v (content=%q)", err, short)
+	}
+	if len(p.CustomModels) != 1 || p.CustomModels[0] != "a/one" {
+		t.Fatalf("落盘的 customModels = %v", p.CustomModels)
 	}
 }

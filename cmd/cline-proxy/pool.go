@@ -104,23 +104,67 @@ func marshalPool() ([]byte, error) {
 	return data, err
 }
 
-// writePoolFile 把已序列化的内容原子地写入磁盘：先写临时文件，再 rename 覆盖。
+// renameFile 是 os.Rename 的间接层，供测试模拟「rename 不被允许」的环境。
+var renameFile = os.Rename
+
+// atomicReplaceUnsupportedFor 记录「哪个路径不能原子替换」。
+// 按路径记忆：换了路径要重新尝试原子替换。只在 saveMu 内读写。
+var atomicReplaceUnsupportedFor string
+
+// writePoolFile 把已序列化的内容写入磁盘。
 //
-// 旧实现直接 os.WriteFile（O_TRUNC），两个并发调用会互相截断；
-// 原子替换消除了这种可能。临时文件名带 pid，避免两个进程共用同一个
-// 账号池路径时互相踩对方的临时文件。
+// 首选原子替换：先写同目录临时文件，再 rename 覆盖。旧实现直接 os.WriteFile
+// （O_TRUNC），两个并发调用会互相截断，落盘结果变成两段 JSON 拼接。
+//
+// 但原子替换在某些部署下不可用：docker-compose 把账号池按「单文件 bind mount」
+// 挂进容器（./.cline-accounts.json:/app/.cline-accounts.json）时，rename 覆盖挂载点
+// 会被内核拒绝，报 EBUSY「device or resource busy」，于是每一次保存都失败。
+// 因此 rename 失败时退回原地写，并记住这个路径不支持原子替换，后续不再白写临时文件。
 func writePoolFile(data []byte) error {
 	saveMu.Lock()
 	defer saveMu.Unlock()
 
-	tmp := fmt.Sprintf("%s.%d.tmp", poolPath, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		log.Printf("Failed to save accounts: %v", err)
+	if atomicReplaceUnsupportedFor != poolPath {
+		tmp := fmt.Sprintf("%s.%d.tmp", poolPath, os.Getpid())
+		if err := os.WriteFile(tmp, data, 0600); err != nil {
+			log.Printf("Failed to write accounts temp file: %v", err)
+			return err
+		}
+		err := renameFile(tmp, poolPath)
+		if err == nil {
+			return nil
+		}
+		os.Remove(tmp)
+		atomicReplaceUnsupportedFor = poolPath
+		log.Printf("Cannot atomically replace %s (%v); falling back to in-place writes."+
+			" This is expected when the file is a single-file bind mount,"+
+			" e.g. the docker-compose volume ./.cline-accounts.json:/app/.cline-accounts.json", poolPath, err)
+	}
+
+	// 原地写：saveMu 保证本进程内不会有两个写入者。
+	//
+	// 刻意不用 os.WriteFile（它先 O_TRUNC 再写）：进程若在截断之后、写入完成
+	// 之前被杀，会留下一个 0 字节文件——而空文件按「空池」处理（不是损坏，
+	// 不会留备份），下一次保存就把真实账号彻底覆盖掉了。
+	// 改成「先写、后截断」：中途被杀最坏是「新内容 + 旧内容尾巴」，解析必然
+	// 失败，于是 loadPool 会把原文件备份成 .corrupt-* 而不是静默丢掉。
+	f, err := os.OpenFile(poolPath, os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		log.Printf("Failed to open accounts file: %v", err)
 		return err
 	}
-	if err := os.Rename(tmp, poolPath); err != nil {
-		log.Printf("Failed to replace accounts file: %v", err)
-		os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		log.Printf("Failed to write accounts: %v", err)
+		return err
+	}
+	if err := f.Truncate(int64(len(data))); err != nil {
+		f.Close()
+		log.Printf("Failed to truncate accounts file: %v", err)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		log.Printf("Failed to close accounts file: %v", err)
 		return err
 	}
 	return nil
