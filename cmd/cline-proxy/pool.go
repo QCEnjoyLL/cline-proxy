@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,12 +56,20 @@ func loadPool() *AccountPool {
 	if err := json.Unmarshal(data, &p); err != nil {
 		// 绝不静默换成空池：只要进程继续跑，任何一次写操作（addAccount、
 		// pickAccount 的用量落盘、改配置…）都会把账号文件覆盖成空池，
-		// 用户的账号就永久没了。先把原文件改名留证，再以空池启动。
-		backup := fmt.Sprintf("%s.corrupt-%d", poolPath, time.Now().Unix())
-		if rerr := os.Rename(poolPath, backup); rerr != nil {
-			log.Printf("Accounts file %s is not valid JSON (%v) and could not be backed up: %v", poolPath, err, rerr)
+		// 用户的账号就永久没了。先把原文件留一份再以空池启动。
+		backup, berr := backupUnreadablePool()
+		if berr != nil {
+			// 连备份都做不成：此时绝不能继续，否则后续任意一次写操作都会
+			// 把用户唯一的账号文件盖掉。宁可这次不落盘——账号文件原样留在
+			// 磁盘上，进程带着空池跑，每次保存都返回错误（见 writePoolFile）。
+			poolSaveBlocked.Store(fmt.Sprintf(
+				"accounts file %s is not valid JSON (%v) and could not be backed up (%v); refusing to overwrite it",
+				poolPath, err, berr))
+			log.Printf("%s", poolSaveBlocked.Load())
+			log.Printf("The file is still on disk unchanged. Fix or remove it, then restart.")
 		} else {
-			log.Printf("Accounts file %s is not valid JSON (%v); kept it as %s and started with an empty pool", poolPath, err, backup)
+			log.Printf("Accounts file %s is not valid JSON (%v); kept a copy at %s and started with an empty pool",
+				poolPath, err, backup)
 		}
 		pool = &AccountPool{Accounts: []*Account{}, Keys: []string{}}
 		return pool
@@ -86,6 +96,51 @@ func loadPool() *AccountPool {
 	return pool
 }
 
+// poolSaveBlocked 非空时禁止任何落盘，值为原因。
+//
+// 唯一会设置它的场景：账号文件解析失败，且连副本都留不下来。
+// 此时若继续保存，就会把用户唯一的账号文件覆盖成空池；宁可让保存全部失败，
+// 让文件原样留在磁盘上等人处理。
+var poolSaveBlocked atomic.Value
+
+// backupUnreadablePool 为「读得出来但解析不了」的账号文件留一份副本，返回副本路径。
+//
+// 为什么用「复制 + 截断原文件」而不是 os.Rename：
+// docker-compose 把账号池按单文件 bind mount 挂进容器时，rename 或移动一个挂载点
+// 会被内核拒绝（EBUSY「device or resource busy」——与 writePoolFile 里那个提示同源）。
+// 复制内容不受该限制，所以在绑定挂载下也留得下副本。
+//
+// 顺序很关键：先把原内容完整复制出去，再截断原文件。中间任何一步失败都返回错误，
+// 不会留下「副本没写成、原文件却已经没了」的状态。
+func backupUnreadablePool() (string, error) {
+	backup := fmt.Sprintf("%s.corrupt-%d", poolPath, time.Now().Unix())
+
+	src, err := os.Open(poolPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(backup, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(backup)
+		return "", err
+	}
+	if err := dst.Close(); err != nil {
+		return "", err
+	}
+
+	// 副本已落盘，现在把坏内容从原路径清掉：否则它会以「空池」的形态继续存活，
+	// 下一次保存就把它覆盖成真正的空池（等于账号丢失）。
+	if err := os.Truncate(poolPath, 0); err != nil {
+		return backup, fmt.Errorf("wrote backup %s but could not clear the bad file: %w", backup, err)
+	}
+	return backup, nil
+}
 // saveMu 只序列化「写文件」这一步：两个 goroutine 同时写同一个文件会互相截断，
 // 落盘结果变成两段 JSON 拼接，而 loadPool 对解析失败是静默换成空池，
 // 下次启动就等于「账号全没了」。
@@ -123,6 +178,12 @@ var atomicReplaceUnsupportedFor string
 func writePoolFile(data []byte) error {
 	saveMu.Lock()
 	defer saveMu.Unlock()
+
+	// 解析失败且留不下副本时禁止落盘：继续写下去会把用户唯一的账号文件
+	// 覆盖成空池。让每次保存都失败、把原因说清楚，比悄悄丢数据强。
+	if reason, _ := poolSaveBlocked.Load().(string); reason != "" {
+		return fmt.Errorf("%s", reason)
+	}
 
 	if atomicReplaceUnsupportedFor != poolPath {
 		tmp := fmt.Sprintf("%s.%d.tmp", poolPath, os.Getpid())
