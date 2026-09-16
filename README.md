@@ -300,9 +300,19 @@ ghcr.io/qcenjoyll/cline-proxy
 
 | Tag | 说明 |
 |---|---|
-| `latest` | 默认分支的最新版本 |
-| `1.3.0` | Git 标签 `v1.3.0` 对应的语义化版本（打标签后自动与源码版本一致）|
+| `latest` | 默认分支的最新构建 |
+| `1.3.2` | 源码版本号（`cmd/cline-proxy/version.go`）。**每次提交都会随版本号自动更新** |
 | `sha-<commit>` | 对应某次提交 |
+
+镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
+
+```bash
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.3.2   # 固定版本
+docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
+```
+
+打 Git 标签（如 `v1.4.0`）发布时，镜像标签取自标签名（去掉 `v`），
+此时不会再额外打上源码里的版本号，避免两者不一致时产生混淆。
 
 镜像支持：
 
