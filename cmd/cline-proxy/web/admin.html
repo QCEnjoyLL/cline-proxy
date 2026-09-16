@@ -1170,25 +1170,33 @@ async function loadModels() {
       select.appendChild(option);
     });
     if (models.some(m => m.id === selectedModel)) select.value = selectedModel;
-    const list = _('settingsModelsList');
-    list.innerHTML = '';
-    models.forEach(m => {
-      const tag = document.createElement('span');
-      tag.className = 'model-tag ' + (m.cost || 'free');
-      tag.appendChild(document.createTextNode(m.id));
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.title = '\u5220\u9664\u6a21\u578b';
-      remove.textContent = '\u2715';
-      remove.addEventListener('click', () => deleteCustomModel(m.id));
-      tag.appendChild(remove);
-      list.appendChild(tag);
-    });
-    if (!models.length) list.innerHTML = '<div class="empty">\u6682\u65e0\u6a21\u578b</div>';
+    // 同一份模型清单渲染到两处：模型库页的「已启用的模型」与设置页的「手工添加模型」
+    const renderTags = (container) => {
+      container.innerHTML = '';
+      models.forEach(m => {
+        const tag = document.createElement('span');
+        tag.className = 'model-tag ' + (m.cost || 'free');
+        tag.appendChild(document.createTextNode(m.id));
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.title = '\u5220\u9664\u6a21\u578b';
+        remove.textContent = '\u2715';
+        remove.addEventListener('click', () => deleteCustomModel(m.id));
+        tag.appendChild(remove);
+        container.appendChild(tag);
+      });
+      if (!models.length) container.innerHTML = '<div class="empty">\u6682\u65e0\u6a21\u578b</div>';
+    };
+    renderTags(_('modelsList'));
+    renderTags(_('settingsModelsList'));
     // 同步模型库的「已启用」标记，避免两处状态不一致
     mInstalled = models.map(m => m.id);
     if (mDataGroups.length) renderRecommended();
-  } catch (e) { _('settingsModelsList').textContent = '加载失败'; }
+  } catch (e) {
+    // 两处容器都要给错误态，避免某个区块永远停在「加载中...」
+    _('modelsList').textContent = '加载失败';
+    _('settingsModelsList').textContent = '加载失败';
+  }
 }
 
 async function addCustomModel() {
