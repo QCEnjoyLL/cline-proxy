@@ -126,6 +126,32 @@ docker compose logs --tail=100
 
 当前版本不使用 `/app/data`，也不会再为该目录创建匿名卷。
 
+## 📁 项目结构
+
+```
+.
+├── cmd/cline-proxy/          # 程序源码（Go，单包）
+│   ├── main.go               #   CLI 入口与 -start 编排
+│   ├── proxy.go              #   OpenAI / Anthropic 代理主体
+│   ├── admin.go              #   管理面板鉴权与全部 REST handler
+│   ├── pool.go               #   账号池与持久化
+│   ├── models.go             #   模型配置（增删、默认模型）
+│   ├── recommended.go        #   官方推荐模型抓取、缓存与中文对照
+│   ├── auth.go               #   WorkOS / Cline OAuth
+│   ├── capture.go            #   -capture 抓包调试工具
+│   ├── http.go, types.go     #   公共 HTTP 辅助与数据结构
+│   ├── web_embed.go          #   go:embed 入口
+│   └── web/                  #   前端页面（go:embed 嵌入二进制）
+│       ├── admin.html        #     管理面板 SPA
+│       └── login.html        #     登录页
+├── Dockerfile
+├── docker-compose.yml
+└── README.md
+```
+
+> 📌 `web/` 必须与 Go 源文件同目录：`go:embed` 不支持 `../` 路径。
+> 运行时数据（账号池、凭据、抓包日志）都定位在**可执行文件所在目录**，与源码布局无关。
+
 ## 🖥️ 管理后台
 
 ### 👤 账号管理

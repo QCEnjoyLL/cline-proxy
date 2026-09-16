@@ -25,10 +25,3 @@ type AccountPool struct {
 	DefaultModel   string     `json:"defaultModel,omitempty"`
 }
 
-type LoginMethod int
-
-const (
-	MethodDeviceOAuth LoginMethod = iota
-	MethodRefreshToken
-	MethodSSOCookie
-)

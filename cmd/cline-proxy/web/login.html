@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cline 代理 - 登录</title>
+<style>
+/* 与 admin.html 共用同一套设计 token；登录页跟随系统主题，不提供手动切换 */
+:root{
+  --bg:#f2f3f5;
+  --surface:rgba(255,255,255,.72);
+  --surface-solid:#ffffff;
+  --bg3:#eef0f3;
+  --border:rgba(0,0,0,.09);
+  --border-strong:rgba(0,0,0,.16);
+  --text:#1d1d1f;
+  --text2:#6e6e73;
+  --accent:#0071e3;
+  --accent-soft:rgba(0,113,227,.12);
+  --red:#c7362f;
+  --red-soft:rgba(199,54,47,.1);
+  --shadow-lg:0 16px 40px rgba(0,0,0,.12),0 2px 8px rgba(0,0,0,.06);
+  --blur:blur(20px) saturate(180%);
+  --ease-out:cubic-bezier(.23,1,.32,1);
+  --t-press:160ms;
+  --t-base:250ms;
+  color-scheme:light;
+}
+html[data-theme="dark"]{
+  --bg:#1c1c1e;
+  --surface:rgba(44,44,46,.68);
+  --surface-solid:#2c2c2e;
+  --bg3:#3a3a3c;
+  --border:rgba(255,255,255,.1);
+  --border-strong:rgba(255,255,255,.2);
+  --text:#f5f5f7;
+  --text2:#98989d;
+  --accent:#0a84ff;
+  --accent-soft:rgba(10,132,255,.2);
+  --red:#ff453a;
+  --red-soft:rgba(255,69,58,.16);
+  --shadow-lg:0 16px 40px rgba(0,0,0,.55);
+  color-scheme:dark;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI','Noto Sans','PingFang SC','Microsoft YaHei',Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font-size:14px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  letter-spacing:-.003em;
+  padding:24px;
+}
+/* 与后台一致的柔和光晕背景 */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;
+  background:
+    radial-gradient(1200px 600px at 18% -12%,color-mix(in srgb,var(--accent) 12%,transparent),transparent 62%),
+    radial-gradient(1000px 520px at 88% 112%,color-mix(in srgb,#32d74b 8%,transparent),transparent 62%);
+}
+.login-wrap{width:100%;max-width:392px;position:relative;z-index:1}
+.card{
+  background:var(--surface);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  border:1px solid var(--border);border-radius:18px;
+  padding:34px 30px 26px;box-shadow:var(--shadow-lg);
+  animation:cardIn var(--t-base) var(--ease-out);
+}
+@keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+.brand{display:flex;align-items:center;justify-content:center;gap:11px;margin-bottom:7px}
+.brand .logo{
+  width:42px;height:42px;border-radius:11px;
+  background:linear-gradient(135deg,#0071e3,#0a84ff);
+  display:flex;align-items:center;justify-content:center;
+  font-size:19px;font-weight:700;color:#fff;letter-spacing:-.02em;
+  box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 35%,transparent);
+}
+.brand h1{font-size:20px;font-weight:650;letter-spacing:-.021em}
+.subtitle{text-align:center;color:var(--text2);font-size:12.5px;margin-bottom:28px}
+.field{margin-bottom:15px}
+.field label{
+  display:block;font-size:11.5px;font-weight:600;
+  color:var(--text2);margin-bottom:7px;letter-spacing:.012em;
+}
+input{
+  width:100%;padding:11px 13px;background:var(--surface-solid);
+  border:1px solid var(--border-strong);border-radius:9px;
+  color:var(--text);font-size:14px;font-family:inherit;
+  transition:border-color var(--t-press) var(--ease-out),box-shadow var(--t-press) var(--ease-out);
+}
+input::placeholder{color:var(--text2);opacity:.7}
+input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3.5px var(--accent-soft)}
+button{
+  width:100%;padding:12px;border:none;border-radius:9px;
+  background:var(--accent);color:#fff;font-size:14px;font-weight:600;
+  cursor:pointer;font-family:inherit;margin-top:8px;
+  transition:transform var(--t-press) var(--ease-out),background var(--t-press) var(--ease-out);
+}
+button:active{transform:scale(.98)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.55;cursor:not-allowed}
+button:disabled:active{transform:none}
+@media (hover:hover) and (pointer:fine){button:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 88%,#000)}}
+.error{
+  display:none;margin-top:15px;padding:10px 13px;
+  background:var(--red-soft);border:1px solid color-mix(in srgb,var(--red) 40%,transparent);
+  color:var(--red);border-radius:9px;font-size:13px;text-align:center;font-weight:500;
+}
+.error.show{display:block;animation:errIn var(--t-base) var(--ease-out)}
+@keyframes errIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.hint{margin-top:20px;text-align:center;font-size:12px;color:var(--text2);line-height:1.6}
+.hint code{background:var(--bg3);padding:2px 7px;border-radius:5px;font-size:11.5px;font-family:'Cascadia Code','Fira Code',Consolas,monospace}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms !important;transition-duration:.01ms !important;
+  }
+  .card:hover{transform:none}
+  button:active{transform:none}
+}
+@media (prefers-reduced-transparency:reduce){
+  .card{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--surface-solid)}
+}
+@media (prefers-contrast:more){
+  :root{--border:rgba(0,0,0,.4);--border-strong:rgba(0,0,0,.6);--text2:#3a3a3c}
+  html[data-theme="dark"]{--border:rgba(255,255,255,.45);--border-strong:rgba(255,255,255,.65);--text2:#d0d0d5}
+  .card{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--surface-solid)}
+}
+</style>
+<!-- 跟随系统配色，避免首帧闪烁：尽早执行 -->
+<script>
+(function(){
+  try{
+    if(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches){
+      document.documentElement.setAttribute('data-theme','dark');
+    }
+  }catch(e){}
+})();
+</script>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="card">
+    <div class="brand">
+      <div class="logo">C</div>
+      <h1>Cline 代理</h1>
+    </div>
+    <div class="subtitle">管理后台 · 请登录</div>
+    <form id="loginForm" autocomplete="on">
+      <div class="field">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" autocomplete="username" placeholder="admin" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+      </div>
+      <button id="loginBtn" type="submit">登 录</button>
+      <div class="error" id="error"></div>
+    </form>
+    <div class="hint">默认账号 <code>admin</code> · 密码未设置时见启动日志</div>
+  </div>
+</div>
+<script>
+(function(){
+  var form=document.getElementById('loginForm'),btn=document.getElementById('loginBtn'),err=document.getElementById('error');
+  form.addEventListener('submit',function(e){
+    e.preventDefault();
+    err.className='error';
+    btn.disabled=true;
+    btn.textContent='登录中...';
+    fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value,password:document.getElementById('password').value})})
+      .then(function(res){ return res.json().then(function(d){ return {ok:res.ok,data:d}; }); })
+      .then(function(r){
+        if(r.ok && r.data.success){ window.location.href='/admin/'; return; }
+        err.textContent=(r.data && r.data.error)||'登录失败，请重试';
+        err.className='error show';
+        btn.disabled=false;
+        btn.textContent='登 录';
+      })
+      .catch(function(){ err.textContent='网络错误，请重试'; err.className='error show'; btn.disabled=false; btn.textContent='登 录'; });
+  });
+})();
+</script>
+</body>
+</html>

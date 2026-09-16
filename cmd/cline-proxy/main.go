@@ -72,7 +72,7 @@ func buildAndStart(port int) {
 	}
 
 	fmt.Println("Building proxy...")
-	cmd := exec.Command("go", "build", "-o", exe, ".")
+	cmd := exec.Command("go", "build", "-o", exe, "./cmd/cline-proxy")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

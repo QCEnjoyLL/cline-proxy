@@ -232,6 +232,11 @@ func refreshClineToken(refreshToken string) (*clineRefreshResp, error) {
 	return &c, nil
 }
 
+// getToken 从本地凭据文件取 access token，必要时用 refreshToken 换新。
+//
+// 注意：当前账号池走的是 pool.go 的 refreshAccountToken，本函数不在主路径上，
+// 保留是因为它与 loadCredentials / saveCredentials / findCredentialsFile 构成
+// 一套完整的凭据文件读写能力（doLogin 也依赖它们），删掉会连带这几支一起失效。
 func getToken() (string, error) {
 	if cachedToken != "" && time.Now().UnixMilli() < cachedExpiry {
 		return cachedToken, nil
