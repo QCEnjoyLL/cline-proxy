@@ -113,12 +113,29 @@ body::before{
   padding:56px 16px 24px;background:rgba(0,0,0,.32);
   -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);}
 .modal.open{display:flex;animation:fadeIn var(--t-fast) var(--ease-out)}
-.modal-card{width:100%;max-width:560px;max-height:calc(100vh - 96px);overflow-y:auto;
+.modal-card{width:100%;max-width:920px;max-height:calc(100vh - 96px);overflow-y:auto;
   background:var(--surface-solid);border:1px solid var(--border);border-radius:var(--radius-lg);
   box-shadow:var(--shadow-lg);animation:panelIn var(--t-base) var(--ease-out)}
+/* 受限模型表：只让「模型」列吸收多余宽度，其余列按内容收窄，
+   否则「23 小时 58 分」「2026/9/18 00:00:00」会被挤成多行。 */
+#modalBody table th,#modalBody table td{padding:9px 10px;vertical-align:middle}
+#modalBody table th:first-child,#modalBody table td:first-child{width:100%}
+#modalBody table th:nth-child(2),#modalBody table td:nth-child(2),
+#modalBody table th:nth-child(3),#modalBody table td:nth-child(3){white-space:nowrap}
+#modalBody table th:nth-child(4),#modalBody table td:nth-child(4){white-space:nowrap;font-variant-numeric:tabular-nums}
+#modalBody table th:last-child,#modalBody table td:last-child{width:1%;white-space:nowrap}
+/* 模型 ID 是长标识符：允许在斜杠、连字符处折行，也不要撑破列宽 */
+#modalBody table td:first-child .mono{overflow-wrap:anywhere}
+.limit-note{margin-top:12px;font-size:11.5px;color:var(--text2);line-height:1.6}
+#modalBody table{width:100%}
+@media (max-width:640px){
+  .modal{padding:24px 10px}
+  .modal-card{max-height:calc(100vh - 48px)}
+  .modal-body{padding:14px 14px 16px}
+}
 .modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
   padding:18px 20px 14px;border-bottom:1px solid var(--border)}
-.modal-head h3{font-size:16px;font-weight:650;letter-spacing:-.015em;margin-bottom:4px;word-break:break-all}
+.modal-head h3{font-size:16px;font-weight:650;letter-spacing:-.015em;margin-bottom:5px;overflow-wrap:anywhere}
 .modal-head .sub{font-size:11.5px;color:var(--text2)}
 .modal-body{padding:16px 20px 20px}
 .modal-close{flex-shrink:0;width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;
@@ -679,23 +696,10 @@ html.theme-anim,html.theme-anim *{
     </table>
   </div>
 </div>
-<div class="modal" id="accountModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-  <div class="modal-card">
-    <div class="modal-head">
-      <div>
-        <h3 id="modalTitle">账号详情</h3>
-        <div class="sub" id="modalSub"></div>
-      </div>
-      <button class="modal-close" type="button" onclick="closeAccountDetail()" title="关闭" aria-label="关闭">
-        <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
-      </button>
-    </div>
-    <div class="modal-body" id="modalBody"></div>
-  </div>
-</div>
 </div>
 
 <div id="tab-import" class="tab-panel" style="display:none">
+
 <h2><svg class="ic-title" aria-hidden="true"><use href="#i-download"/></svg>导入账号</h2>
 <div class="section">
   <div class="tabs" id="importTabs">
@@ -854,6 +858,25 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 </div>
+</div>
+
+<!-- 账号详情弹层。
+     必须放在 .layout 之外（与 #toast 同级）：position:fixed 的元素若处于
+     display:none 的祖先（未激活的 tab 面板）下不会被渲染，
+     表现为「打开详情什么都没显示」。 -->
+<div class="modal" id="accountModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h3 id="modalTitle">账号详情</h3>
+        <div class="sub" id="modalSub"></div>
+      </div>
+      <button class="modal-close" type="button" onclick="closeAccountDetail()" title="关闭" aria-label="关闭">
+        <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
 </div>
 
 <div id="toast" class="toast"></div>
@@ -1109,8 +1132,12 @@ function renderAccountDetail(a) {
     html += '</tbody></table>';
   }
 
-  if (limited.length) {
-    html += '<div class="kv" style="margin-top:12px">未给出重置时间时，该组合按设置页配置的冷却时长（' +
+  // 只在确实有条目「上游没给重置时间」时才解释兜底规则。
+  // 原来只看 limited.length：所有条目都有明确重置时间时也会显示这句话，
+  // 与表格里的具体时间自相矛盾。
+  const withoutReset = limited.filter(c => !c.resetsAt).length;
+  if (withoutReset > 0) {
+    html += '<div class="limit-note">其中 ' + withoutReset + ' 项上游未给出重置时间，按设置页配置的冷却时长（' +
       (a.cooldownMinutes || 0) + ' 分钟）自动恢复。</div>';
   }
 
