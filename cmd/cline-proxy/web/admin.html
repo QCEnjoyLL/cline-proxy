@@ -108,6 +108,30 @@ body::before{
   font-size:11.5px;color:var(--text2);letter-spacing:.01em;
 }
 .app-foot .app-foot-ver{font-size:11px;color:var(--text2)}
+/* 账号详情弹层 */
+.modal{position:fixed;inset:0;z-index:200;display:none;align-items:flex-start;justify-content:center;
+  padding:56px 16px 24px;background:rgba(0,0,0,.32);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);}
+.modal.open{display:flex;animation:fadeIn var(--t-fast) var(--ease-out)}
+.modal-card{width:100%;max-width:560px;max-height:calc(100vh - 96px);overflow-y:auto;
+  background:var(--surface-solid);border:1px solid var(--border);border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-lg);animation:panelIn var(--t-base) var(--ease-out)}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+  padding:18px 20px 14px;border-bottom:1px solid var(--border)}
+.modal-head h3{font-size:16px;font-weight:650;letter-spacing:-.015em;margin-bottom:4px;word-break:break-all}
+.modal-head .sub{font-size:11.5px;color:var(--text2)}
+.modal-body{padding:16px 20px 20px}
+.modal-close{flex-shrink:0;width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius-sm);border:1px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;
+  transition:background var(--t-press) var(--ease-out),color var(--t-press) var(--ease-out)}
+.modal-close:hover{background:var(--surface-2);color:var(--text)}
+.meta-row{display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:16px;font-size:12px;color:var(--text2)}
+.meta-row b{color:var(--text);font-weight:600}
+.kv{font-size:12px;color:var(--text2);margin-bottom:6px}
+.kv b{color:var(--text);font-weight:600}
+.chip{display:inline-block;padding:2px 7px;border-radius:5px;background:var(--bg3);
+  font-size:11px;font-family:var(--mono);color:var(--text2);margin:0 5px 5px 0}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .nav-item{
   display:flex;align-items:center;gap:10px;
   margin:1px 10px;padding:9px 12px;border-radius:var(--radius-sm);
@@ -647,12 +671,26 @@ html.theme-anim,html.theme-anim *{
   <div class="section-body" style="padding:0">
     <table>
       <thead>
-        <tr><th>账号</th><th>模型</th><th>剩余</th><th>恢复时间</th></tr>
+        <tr><th>账号</th><th>模型</th><th>状态</th><th>剩余</th><th>恢复时间</th></tr>
       </thead>
       <tbody id="cooldownTableBody">
-        <tr><td colspan="4" class="empty">加载中...</td></tr>
+        <tr><td colspan="5" class="empty">加载中...</td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+<div class="modal" id="accountModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h3 id="modalTitle">账号详情</h3>
+        <div class="sub" id="modalSub"></div>
+      </div>
+      <button class="modal-close" type="button" onclick="closeAccountDetail()" title="关闭" aria-label="关闭">
+        <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
   </div>
 </div>
 </div>
@@ -928,6 +966,7 @@ async function loadAccounts() {
         '<td class="mono" style="font-size:11px">' + cr + '</td>' +
         '<td style="white-space:nowrap">' +
           toggle +
+          '<button class="btn btn-sm" onclick="showAccountDetail(\'' + a.accountId + '\')" title="账号详情（按模型查看额度与重置时间）"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button> ' +
           '<button class="btn btn-sm" onclick="resetAccount(\'' + a.accountId + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
           '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + a.accountId + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
         '</td></tr>';
@@ -936,6 +975,7 @@ async function loadAccounts() {
 }
 
 // 冷却状态：粒度是「账号 × 模型」——同账号的其它模型不受影响，到点自动恢复。
+// 账号列显示邮箱（账号 ID 对人不友好），没有邮箱时退回显示 ID。
 async function loadCooldowns() {
   const tbody = _('cooldownTableBody');
   if (!tbody) return;
@@ -943,20 +983,53 @@ async function loadCooldowns() {
     const d = await api('GET', '/cooldowns');
     const list = d.data.cooldowns || [];
     if (list.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty">当前没有处于冷却的「账号 × 模型」组合</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">当前没有处于冷却的「账号 × 模型」组合</td></tr>';
       return;
     }
-    tbody.innerHTML = list.map(c =>
-      '<tr>' +
-        '<td class="mono" style="font-size:11px">' + esc(c.accountId) + '</td>' +
+    tbody.innerHTML = list.map(c => {
+      const who = c.email ? esc(c.email) : '<span class="mono" style="font-size:11px">' + esc(c.accountId) + '</span>';
+      return '<tr>' +
+        '<td>' + who + '</td>' +
         '<td class="mono" style="font-size:11px">' + esc(c.modelId) + '</td>' +
+        '<td>' + limitBadge(c) + '</td>' +
         '<td>' + formatRemaining(c.remainingSec) + '</td>' +
-        '<td class="mono" style="font-size:11px">' + new Date(c.until).toLocaleTimeString('zh-CN') + '</td>' +
-      '</tr>'
-    ).join('');
+        '<td class="mono" style="font-size:11px" title="' + esc(untilTitle(c)) + '">' +
+          new Date(c.until).toLocaleString('zh-CN') + '</td>' +
+      '</tr>';
+    }).join('');
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty">读取冷却状态失败：' + esc(e.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">读取冷却状态失败：' + esc(e.message) + '</td></tr>';
   }
+}
+
+// 状态徽章：区分「上游明确说额度用尽」和「我们按配置时长兜底的 429」。
+function limitBadge(c) {
+  if (!c.limited) {
+    return '<span class="status cooldown" title="上游未说明原因，按配置的冷却时长暂避">' +
+      '<span class="status-dot cooldown"></span>限流</span>';
+  }
+  const label = limitKindLabel(c.kind);
+  return '<span class="status cooldown" title="' + esc(limitKindTitle(c.kind)) + '">' +
+    '<span class="status-dot cooldown"></span>' + esc(label) + '</span>';
+}
+
+const LIMIT_KIND_LABEL = {
+  free_daily: '免费额度',
+  pass_limit: 'ClinePass 额度',
+  spend_limit: '花费上限'
+};
+const LIMIT_KIND_TITLE = {
+  free_daily: '免费模型的每日额度已用尽',
+  pass_limit: 'ClinePass 订阅额度已用尽',
+  spend_limit: '账户/组织的周期花费上限已用尽'
+};
+function limitKindLabel(kind) { return LIMIT_KIND_LABEL[kind] || '额度用尽'; }
+function limitKindTitle(kind) { return LIMIT_KIND_TITLE[kind] || '上游报告额度不足'; }
+
+// 鼠标悬停显示上游原文，便于核对判断是否正确（不放进弹层是为了不打断浏览）。
+function untilTitle(c) {
+  if (!c.detail) return '恢复时间（本地时区）';
+  return '上游原文：' + c.detail;
 }
 
 function formatRemaining(sec) {
@@ -964,7 +1037,107 @@ function formatRemaining(sec) {
   if (s < 60) return s + ' 秒';
   const m = Math.floor(s / 60);
   if (m < 60) return m + ' 分 ' + (s % 60) + ' 秒';
-  return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + ' 小时 ' + (m % 60) + ' 分';
+  return Math.floor(h / 24) + ' 天 ' + (h % 24) + ' 小时';
+}
+
+function fmtDateTime(ms) {
+  if (!ms) return '-';
+  return new Date(ms).toLocaleString('zh-CN');
+}
+
+// ========== 账号详情 ==========
+// 展示「这个账号下哪些模型到了上限、什么时候重置、还有哪些模型可用」。
+// 额度的粒度本来就是账号×模型（同账号各模型独立计额），所以按这个粒度呈现。
+let modalAccountId = null;
+let modalTimer = null;
+
+async function showAccountDetail(accountId) {
+  modalAccountId = accountId;
+  const modal = _('accountModal');
+  modal.classList.add('open');
+  _('modalTitle').textContent = '账号详情';
+  _('modalSub').textContent = '';
+  _('modalBody').innerHTML = '<div class="empty">加载中...</div>';
+  await refreshAccountDetail();
+}
+
+async function refreshAccountDetail() {
+  if (!modalAccountId) return;
+  try {
+    const d = await api('GET', '/accounts/detail?accountId=' + encodeURIComponent(modalAccountId));
+    renderAccountDetail(d.data);
+  } catch (e) {
+    _('modalBody').innerHTML = '<div class="empty">读取账号详情失败：' + esc(e.message) + '</div>';
+  }
+}
+
+function renderAccountDetail(a) {
+  _('modalTitle').textContent = a.email || a.accountId;
+  const badge = a.disabled
+    ? '<span class="status disabled"><span class="status-dot disabled"></span>已禁用</span>'
+    : '<span class="status ' + esc(a.status) + '"><span class="status-dot ' + esc(a.status) + '"></span>' +
+      ({ active: '活跃', expired: '已过期' }[a.status] || esc(a.status)) + '</span>';
+  _('modalSub').innerHTML = badge + ' <span class="mono">' + esc(a.accountId) + '</span>';
+
+  let html = '<div class="meta-row">' +
+    '<span>今日使用 <b>' + (a.dailyUsageCount || 0) + '</b> 次（代理侧计数）</span>' +
+    '<span>累计 <b>' + (a.usageCount || 0) + '</b> 次</span>' +
+    (a.lastUsed ? '<span>最后使用 <b>' + esc(fmtDateTime(Date.parse(a.lastUsed))) + '</b></span>' : '') +
+    '</div>';
+
+  const limited = a.limited || [];
+  html += '<div class="section-title" style="font-size:12.5px;padding:0 0 8px">已达上限的模型（' + limited.length + '）</div>';
+  if (limited.length === 0) {
+    html += '<div class="empty" style="padding:14px 0">该账号当前没有模型受限</div>';
+  } else {
+    html += '<table><thead><tr><th>模型</th><th>原因</th><th>剩余</th><th>重置时间</th><th></th></tr></thead><tbody>';
+    html += limited.map(c =>
+      '<tr>' +
+        '<td class="mono" style="font-size:11px">' + esc(c.modelId) + '</td>' +
+        '<td>' + limitBadge(c) + '</td>' +
+        '<td>' + formatRemaining(c.remainingSec) + '</td>' +
+        '<td class="mono" style="font-size:11px">' +
+          (c.resetsAt ? esc(fmtDateTime(c.resetsAt)) : '<span style="color:var(--text2)">上游未说明</span>') +
+        '</td>' +
+        '<td><button class="btn btn-sm" title="立即解除冷却，让请求重新参与轮询" ' +
+          'onclick="clearCooldown(\'' + esc(c.accountId) + '\',\'' + esc(c.modelId) + '\')">' +
+          '<svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>解除</button></td>' +
+      '</tr>'
+    ).join('');
+    html += '</tbody></table>';
+  }
+
+  if (limited.length) {
+    html += '<div class="kv" style="margin-top:12px">未给出重置时间时，该组合按设置页配置的冷却时长（' +
+      (a.cooldownMinutes || 0) + ' 分钟）自动恢复。</div>';
+  }
+
+  const others = a.otherModels || [];
+  if (others.length) {
+    html += '<div class="section-title" style="font-size:12.5px;padding:14px 0 8px">仍可用的模型（' + others.length + '）</div>';
+    html += '<div>' + others.slice(0, 60).map(m => '<span class="chip">' + esc(m) + '</span>').join('') +
+      (others.length > 60 ? '<span class="kv">…另有 ' + (others.length - 60) + ' 个</span>' : '') + '</div>';
+  }
+
+  _('modalBody').innerHTML = html;
+}
+
+async function clearCooldown(accountId, modelId) {
+  try {
+    await api('POST', '/cooldowns/clear', { accountId: accountId, modelId: modelId });
+    toast('已解除冷却：' + modelId, 'success');
+    await refreshAccountDetail();
+    loadCooldowns(); loadStats();
+  } catch (e) {
+    toast('解除失败: ' + e.message, 'error');
+  }
+}
+
+function closeAccountDetail() {
+  _('accountModal').classList.remove('open');
+  modalAccountId = null;
 }
 
 async function exportAccounts() {
@@ -1568,6 +1741,20 @@ loadConfig();
 // 预取模型库数据（服务端有 30 分钟缓存，不会每次都回源）
 loadRecommended(false);
 setInterval(() => { loadStats(); }, 10000);
+
+// 账号详情弹层：点击遮罩或按 Esc 关闭。
+// 详情打开期间每 20 秒刷新一次剩余时间，免得数字停在打开那一刻。
+(() => {
+  const modal = _('accountModal');
+  if (!modal) return;
+  modal.addEventListener('click', e => { if (e.target === modal) closeAccountDetail(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && modal.classList.contains('open')) closeAccountDetail();
+  });
+  modalTimer = setInterval(() => {
+    if (modal.classList.contains('open')) refreshAccountDetail();
+  }, 20000);
+})();
 </script>
 
 <!-- 主题管理：自包含，不改动上面的业务脚本 -->

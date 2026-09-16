@@ -441,9 +441,19 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 		if resp.StatusCode == 429 {
 			// 只冷却「该账号 × 该模型」这一组合，到点自动恢复；
 			// 同账号的其它模型不受影响（上游按模型独立计额）。
-			ttl := markCooldown(acc.AccountID, model)
-			log.Printf("  cooldown: %s x %s for %s",
-				truncateEmail(acc.Email), model, ttl)
+			//
+			// 同时解析响应体：若是「额度用尽」，上游往往给出重置时间
+			// （免费模型是次日零点、花费上限带 resets_at），用它比用配置里的
+			// 固定时长准确——否则会在真实重置前把请求放回去，立刻再撞 429。
+			info := parseLimitInfo(string(bodyBytes), time.Now(), true)
+			ttl := markCooldown(acc, model, info)
+			if info.Kind != limitKindUnknown && info.Kind != "" {
+				log.Printf("  limit reached: %s x %s (%s), cooldown %s, resets %s",
+					truncateEmail(acc.Email), model, info.Kind, ttl.Round(time.Second), formatResetAt(info.ResetAt))
+			} else {
+				log.Printf("  cooldown: %s x %s for %s (unrecognized 429)",
+					truncateEmail(acc.Email), model, ttl.Round(time.Second))
+			}
 		}
 		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
 	}

@@ -11,7 +11,7 @@ import (
 
 func resetCooldowns() {
 	cooldowns.mu.Lock()
-	cooldowns.cooldowns = map[string]time.Time{}
+	cooldowns.records = map[string]cooldownRecord{}
 	cooldowns.mu.Unlock()
 	setProxyConfig(defaultProxyConfig())
 }
@@ -24,7 +24,7 @@ func TestCooldownMarkAndExpiry(t *testing.T) {
 	now := time.Now()
 	// 用真实默认值而非写死数字，避免默认值调整后测试失效
 	ttl := time.Duration(defaultCooldownMinutes) * time.Minute
-	cooldowns.mark("acc1", "vendor/modelA", now, ttl)
+	cooldowns.mark("acc1", "acc1@test.com", "vendor/modelA", now, ttl, limitInfo{})
 
 	if !cooldowns.isCooling("acc1", "vendor/modelA", now.Add(time.Second)) {
 		t.Fatal("刚标记的组合应在冷却中")
@@ -42,7 +42,7 @@ func TestCooldownIsPerModel(t *testing.T) {
 	t.Cleanup(resetCooldowns)
 
 	now := time.Now()
-	cooldowns.mark("acc1", "vendor/modelA", now, time.Hour)
+	cooldowns.mark("acc1", "acc1@test.com", "vendor/modelA", now, time.Hour, limitInfo{})
 
 	if !cooldowns.isCooling("acc1", "vendor/modelA", now.Add(time.Minute)) {
 		t.Fatal("modelA 应在冷却中")
@@ -61,9 +61,9 @@ func TestCooldownClearAccount(t *testing.T) {
 	t.Cleanup(resetCooldowns)
 
 	now := time.Now()
-	cooldowns.mark("acc1", "a/one", now, time.Hour)
-	cooldowns.mark("acc1", "a/two", now, time.Hour)
-	cooldowns.mark("acc2", "a/one", now, time.Hour)
+	cooldowns.mark("acc1", "acc1@test.com", "a/one", now, time.Hour, limitInfo{})
+	cooldowns.mark("acc1", "acc1@test.com", "a/two", now, time.Hour, limitInfo{})
+	cooldowns.mark("acc2", "acc2@test.com", "a/one", now, time.Hour, limitInfo{})
 
 	cooldowns.clearAccount("acc1")
 
@@ -99,7 +99,7 @@ func TestPickAccountSkipsCoolingModel(t *testing.T) {
 	}
 
 	// modelA 冷却：modelA 选不到
-	cooldowns.mark("acc_x", "vendor/modelA", now, time.Hour)
+	cooldowns.mark("acc_x", "acc_x@test.com", "vendor/modelA", now, time.Hour, limitInfo{})
 	if acc := pickAccount("vendor/modelA"); acc != nil {
 		t.Fatal("模型冷却中不应选中该账号")
 	}
@@ -184,7 +184,7 @@ func TestEnableDisableAccountAPI(t *testing.T) {
 	}
 
 	// 启用（同时清空冷却）
-	cooldowns.mark("acc_api", "vendor/m", time.Now(), time.Hour)
+	cooldowns.mark("acc_api", "acc_api@test.com", "vendor/m", time.Now(), time.Hour, limitInfo{})
 	if rec := post("/admin/api/accounts/enable", "acc_api"); rec.Code != http.StatusOK {
 		t.Fatalf("enable status = %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -222,7 +222,7 @@ func TestCooldownMinutesPersistAndApply(t *testing.T) {
 	}
 
 	// markCooldown 使用配置的时长：TTL=1 分钟 → 90 秒后应已恢复
-	markCooldown("acc1", "m")
+	markCooldown(&Account{AccountID: "acc1", Email: "acc1@test.com"}, "m", limitInfo{})
 	if !cooldowns.isCooling("acc1", "m", time.Now()) {
 		t.Fatal("刚标记的组合应在冷却中")
 	}
@@ -264,7 +264,7 @@ func TestEffectiveModelMatchesUpstreamBody(t *testing.T) {
 			t.Fatalf("请求体模型 %v 与冷却键模型 %q 不一致", b["model"], got)
 		}
 		// 两处一致才意味着：用 effectiveModel 标记的冷却能被同 key 查到
-		cooldowns.mark("acc_k", got, time.Now(), time.Hour)
+		cooldowns.mark("acc_k", "acc_k@test.com", got, time.Now(), time.Hour, limitInfo{})
 		if !cooldowns.isCooling("acc_k", got, time.Now()) {
 			t.Fatal("用 effectiveModel 标记的冷却应能被同 key 查询")
 		}
@@ -278,7 +278,7 @@ func TestCooldownsEndpointShape(t *testing.T) {
 	resetCooldowns()
 	t.Cleanup(resetCooldowns)
 
-	cooldowns.mark("acc_s", "vendor/modelA", time.Now(), time.Hour)
+	cooldowns.mark("acc_s", "acc_s@test.com", "vendor/modelA", time.Now(), time.Hour, limitInfo{})
 
 	rec := httptest.NewRecorder()
 	handleAdminCooldowns(rec, httptest.NewRequest(http.MethodGet, "/admin/api/cooldowns", nil))
