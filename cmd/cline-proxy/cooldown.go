@@ -15,14 +15,14 @@ func cooldownKey(accountID, modelID string) string {
 	return accountID + "|" + modelID
 }
 
-// cooldownTTL 返回当前生效的冷却时长。
-// 读取配置里用户设置的分钟数，非法值回退到默认 30 分钟。
-func cooldownTTL() time.Duration {
-	cfg := getProxyConfig()
-	if cfg.CooldownMinutes <= 0 {
-		return 30 * time.Minute
-	}
-	return time.Duration(cfg.CooldownMinutes) * time.Minute
+// markCooldown 用当前生效的冷却时长标记「账号 × 模型」冷却，返回实际使用的时长（供日志）。
+//
+// TTL 不在这里读配置：cooldownMinutes() 会获取 poolMu，
+// 若在持有 cooldowns.mu 时调用就形成锁嵌套。这里先取 TTL 再入锁。
+func markCooldown(accountID, modelID string) time.Duration {
+	ttl := time.Duration(cooldownMinutes()) * time.Minute
+	cooldowns.mark(accountID, modelID, time.Now(), ttl)
+	return ttl
 }
 
 // cooldownStore 保存全部「账号×模型」冷却记录（内存态，进程重启即清空）。
@@ -38,10 +38,16 @@ type cooldownStore struct {
 var cooldowns = &cooldownStore{cooldowns: map[string]time.Time{}}
 
 // mark 把指定账号的指定模型放入冷却，到点自动恢复（见 isCooling）。
-func (c *cooldownStore) mark(accountID, modelID string, now time.Time) {
+//
+// 账号或模型为空时直接跳过：组合级冷却需要一个确定的模型标识，
+// 否则会写入一个永远查不到的 key（如 acc|），静默失效。
+func (c *cooldownStore) mark(accountID, modelID string, now time.Time, ttl time.Duration) {
+	if accountID == "" || modelID == "" {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cooldowns[cooldownKey(accountID, modelID)] = now.Add(cooldownTTL())
+	c.cooldowns[cooldownKey(accountID, modelID)] = now.Add(ttl)
 }
 
 // isCooling 返回该组合是否仍在冷却中。

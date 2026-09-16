@@ -275,12 +275,17 @@ func handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accounts := listAccounts()
+	// 读 CurrentIdx 必须持池锁：pickAccount 在锁内更新它。
+	p := loadPool()
+	poolMu.Lock()
+	poolIndex := p.CurrentIdx
+	poolMu.Unlock()
 	writeAPI(w, http.StatusOK, apiResponse{
 		Success: true,
 		Data: map[string]any{
-			"accounts":   accounts,
-			"total":      len(accounts),
-			"poolIndex":  loadPool().CurrentIdx,
+			"accounts":  accounts,
+			"total":     len(accounts),
+			"poolIndex": poolIndex,
 		},
 	})
 }
@@ -698,14 +703,18 @@ func handleAdminRefreshAll(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
 	}
+	// 不在 poolMu 内刷新：refreshAccountToken → savePool 会取 poolMu，
+	// 持锁调用即自锁死；而且持锁跨越 N 次网络请求会阻塞所有代理请求。
+	// 先在锁内拷贝一份账号指针，再在锁外逐个刷新。
 	p := loadPool()
 	poolMu.Lock()
-	for _, a := range p.Accounts {
+	accounts := append([]*Account(nil), p.Accounts...)
+	poolMu.Unlock()
+	for _, a := range accounts {
 		if err := refreshAccountToken(a); err != nil {
 			log.Printf("Refresh failed for %s: %v", a.Email, err)
 		}
 	}
-	poolMu.Unlock()
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "All tokens refreshed"})
 }
 
@@ -749,15 +758,22 @@ func handleAdminAccountReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset status to active, clear both usage counters, and refresh token
+	// 重置：状态归位、清空用量计数、刷新 Token，
+	// 并清掉该账号的全部「账号×模型」冷却——否则 UI 显示已恢复，
+	// 实际仍会被 pickAccount 跳过最多一整个冷却周期。
+	// 写入共享账号对象必须持池锁：savePool 会在池锁内 marshal，
+	// 锁外改字段属于数据竞争。
+	poolMu.Lock()
 	acc.Status = "active"
 	acc.UsageCount = 0
 	acc.DailyUsageCount = 0
 	acc.DailyUsageDate = ""
+	poolMu.Unlock()
 	if err := refreshAccountToken(acc); err != nil {
 		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "reset failed: " + err.Error()})
 		return
 	}
+	cooldowns.clearAccount(req.AccountID)
 
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "Account reset"})
 }
@@ -778,14 +794,21 @@ func setAccountDisabled(accountID string, disabled bool) (bool, error) {
 	if acc == nil {
 		return false, nil
 	}
+
 	poolMu.Lock()
+	prev := acc.Disabled // 记录旧值：取反回滚在「重复禁用」时会写反
 	acc.Disabled = disabled
 	poolMu.Unlock()
+
 	if err := savePool(); err != nil {
-		acc.Disabled = !disabled // 回滚内存态
+		poolMu.Lock()
+		acc.Disabled = prev
+		poolMu.Unlock()
 		return true, err
 	}
+
 	if !disabled {
+		// 启用：清掉该账号全部冷却，让它真正回到轮询
 		cooldowns.clearAccount(accountID)
 	}
 	return true, nil
@@ -876,11 +899,11 @@ func handleAdminCooldowns(w http.ResponseWriter, r *http.Request) {
 type proxyConfigData struct {
 	Strategy string            `json:"strategy"`
 	Headers  map[string]string `json:"headers"`
-	// CooldownMinutes 是「账号×模型」级 429 冷却的自动恢复时长。
-	// 0 或负数表示用默认值（30 分钟）。
-	CooldownMinutes int `json:"cooldownMinutes,omitempty"`
 }
 
+// defaultCooldownMinutes 是冷却时长的兜底值（分钟）。
+// 实际值存在账号池文件里（AccountPool.CooldownMinutes），见 pool.go 的
+// cooldownMinutes / setCooldownMinutes。
 const defaultCooldownMinutes = 30
 
 func defaultProxyConfig() *proxyConfigData {
@@ -914,8 +937,16 @@ func setProxyConfig(c *proxyConfigData) {
 
 // GET /admin/api/keys
 func handleAdminGetKeys(w http.ResponseWriter, r *http.Request) {
+	// 必须拷贝：直接把共享切片交给 json.Marshal，会和并发的
+	// 生成/删除密钥（append 会换底层数组）竞争。
 	p := loadPool()
-	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{"keys": p.Keys}})
+	poolMu.Lock()
+	keys := append([]string(nil), p.Keys...)
+	poolMu.Unlock()
+	if keys == nil {
+		keys = []string{}
+	}
+	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{"keys": keys}})
 }
 
 // POST /admin/api/keys/generate
@@ -968,18 +999,14 @@ func handleAdminDeleteKey(w http.ResponseWriter, r *http.Request) {
 // GET /admin/api/config
 func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := getProxyConfig()
-	minutes := cfg.CooldownMinutes
-	if minutes <= 0 {
-		minutes = defaultCooldownMinutes
-	}
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
-		"address":          "127.0.0.1:3457",
-		"strategy":         cfg.Strategy,
-		"version":          "go-1.1",
-		"poolPath":         poolPath,
-		"defaultModel":     getDefaultModel(),
-		"headers":          cfg.Headers,
-		"cooldownMinutes":  minutes,
+		"address":         "127.0.0.1:3457",
+		"strategy":        cfg.Strategy,
+		"version":         "go-1.1",
+		"poolPath":        poolPath,
+		"defaultModel":    getDefaultModel(),
+		"headers":         cfg.Headers,
+		"cooldownMinutes": cooldownMinutes(),
 	}})
 }
 
@@ -1007,12 +1034,44 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ---- 先把所有参数校验完，再做任何修改 ----
+	// 否则会出现「客户端收到 400，但服务端已部分生效」的不一致。
 	if req.Strategy != "" {
 		switch req.Strategy {
 		case "round_robin", "fill", "random":
 		default:
 			writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid strategy, must be: round_robin, fill, random"})
 			return
+		}
+	}
+
+	var cooldownToApply *int
+	if req.CooldownMinutes != nil {
+		// 允许 1~1440（1 分钟到 1 天）；0 视为恢复默认
+		m := *req.CooldownMinutes
+		if m < 0 || m > 1440 {
+			writeAPI(w, http.StatusBadRequest, apiResponse{Error: "cooldownMinutes must be 0-1440"})
+			return
+		}
+		if m == 0 {
+			m = defaultCooldownMinutes
+		}
+		cooldownToApply = &m
+	}
+
+	// 先做唯一会写盘的步骤：它失败时其余修改都还没生效，
+	// 响应与内存状态保持一致。
+	// 冷却时长持久化到账号池文件（跨重启保留），且只在值确实变化时才清空
+	// 现有冷却——否则改一个无关设置就会把所有仍在限流的组合放回池里，
+	// 立刻再次撞 429。
+	if cooldownToApply != nil {
+		prev := cooldownMinutes()
+		if err := setCooldownMinutes(*cooldownToApply); err != nil {
+			writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "persist cooldownMinutes: " + err.Error()})
+			return
+		}
+		if *cooldownToApply != prev {
+			cooldowns.clearAll()
 		}
 	}
 
@@ -1027,44 +1086,30 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cfg := getProxyConfig()
-	changed := false
+	// 必须基于副本修改：getProxyConfig() 返回共享指针，就地改 Headers
+	// 会与其他 goroutine 的 map 遍历并发，触发
+	// "concurrent map iteration and map write" 直接终止整个进程。
+	cur := getProxyConfig()
+	next := &proxyConfigData{
+		Strategy: cur.Strategy,
+		Headers:  make(map[string]string, len(cur.Headers)),
+	}
+	for k, v := range cur.Headers {
+		next.Headers[k] = v
+	}
 	if req.Strategy != "" {
-		cfg.Strategy = req.Strategy
-		changed = true
+		next.Strategy = req.Strategy
 	}
-	if req.Headers != nil {
-		for k, v := range req.Headers {
-			cfg.Headers[k] = v
-		}
-		changed = true
+	for k, v := range req.Headers {
+		next.Headers[k] = v
 	}
-
-	if req.CooldownMinutes != nil {
-		// 允许 1~1440（1 分钟到 1 天）；0 视为恢复默认
-		m := *req.CooldownMinutes
-		if m < 0 || m > 1440 {
-			writeAPI(w, http.StatusBadRequest, apiResponse{Error: "cooldownMinutes must be 0-1440"})
-			return
-		}
-		if m == 0 {
-			m = defaultCooldownMinutes
-		}
-		cfg.CooldownMinutes = m
-		changed = true
-		// 时长变更立即清空旧冷却，避免用新 TTL 解释旧记录
-		cooldowns.clearAll()
-	}
-
-	if changed {
-		setProxyConfig(cfg)
-	}
+	setProxyConfig(next)
 
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
-		"strategy":        cfg.Strategy,
-		"headers":         cfg.Headers,
+		"strategy":        next.Strategy,
+		"headers":         next.Headers,
 		"defaultModel":    getDefaultModel(),
-		"cooldownMinutes": func() int { if cfg.CooldownMinutes <= 0 { return defaultCooldownMinutes }; return cfg.CooldownMinutes }(),
+		"cooldownMinutes": cooldownMinutes(),
 	}})
 }
 
@@ -1133,26 +1178,38 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := loadPool()
-	active, cooldown, expired := 0, 0, 0
+	poolMu.Lock()
+	active, expired, disabled := 0, 0, 0
 	for _, a := range p.Accounts {
+		if a.Disabled {
+			disabled++
+			continue // 手动禁用不算「活跃」
+		}
 		switch a.Status {
 		case "active":
 			active++
-		case "cooldown":
-			cooldown++
 		case "expired":
 			expired++
 		}
 	}
+	poolMu.Unlock()
+
+	// strategy 必须回读真实配置：设置页用它回填下拉框，
+	// 写死常量会让改成 fill / random 后仍显示 round_robin。
+	cfg := getProxyConfig()
+
+	// 冷却数来自真实的「账号×模型」冷却表（旧的 Status=="cooldown" 已不再写入）
+	cooling := len(cooldowns.snapshot(time.Now()))
 
 	writeAPI(w, http.StatusOK, apiResponse{
 		Success: true,
 		Data: map[string]any{
 			"total":    len(p.Accounts),
 			"active":   active,
-			"cooldown": cooldown,
+			"cooldown": cooling,
 			"expired":  expired,
-			"strategy": "round_robin",
+			"disabled": disabled,
+			"strategy": cfg.Strategy,
 			"version":  "go-1.1",
 		},
 	})

@@ -107,7 +107,7 @@ func setDefaultModel(id string) error {
 
 	previous := p.DefaultModel
 	p.DefaultModel = id
-	if err := savePool(); err != nil {
+	if err := savePoolLocked(); err != nil {
 		p.DefaultModel = previous
 		return fmt.Errorf("%w: %v", errModelStorage, err)
 	}
@@ -187,7 +187,7 @@ func addCustomModel(id string) (string, error) {
 			filtered = append(filtered, disabledID)
 		}
 		p.DisabledModels = filtered
-		if err := savePool(); err != nil {
+		if err := savePoolLocked(); err != nil {
 			p.DisabledModels = original
 			return "", fmt.Errorf("%w: %v", errModelStorage, err)
 		}
@@ -200,7 +200,7 @@ func addCustomModel(id string) (string, error) {
 		}
 	}
 	p.CustomModels = append(p.CustomModels, id)
-	if err := savePool(); err != nil {
+	if err := savePoolLocked(); err != nil {
 		p.CustomModels = p.CustomModels[:len(p.CustomModels)-1]
 		return "", fmt.Errorf("%w: %v", errModelStorage, err)
 	}
@@ -228,7 +228,7 @@ func deleteCustomModel(id string) error {
 		if p.DefaultModel == id {
 			p.DefaultModel = ""
 		}
-		if err := savePool(); err != nil {
+		if err := savePoolLocked(); err != nil {
 			p.DisabledModels = original
 			p.DefaultModel = originalDefault
 			return fmt.Errorf("%w: %v", errModelStorage, err)
@@ -256,7 +256,7 @@ func deleteCustomModel(id string) error {
 	if p.DefaultModel == id {
 		p.DefaultModel = ""
 	}
-	if err := savePool(); err != nil {
+	if err := savePoolLocked(); err != nil {
 		p.CustomModels = original
 		p.DefaultModel = originalDefault
 		return fmt.Errorf("%w: %v", errModelStorage, err)

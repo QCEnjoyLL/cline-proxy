@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -31,12 +32,35 @@ func loadPool() *AccountPool {
 
 	data, err := os.ReadFile(poolPath)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("Failed to read accounts file %s: %v", poolPath, err)
+		}
+		pool = &AccountPool{Accounts: []*Account{}, Keys: []string{}}
+		return pool
+	}
+
+	// 去掉 UTF-8 BOM：Windows 记事本 / PowerShell 的 Set-Content -Encoding UTF8 /
+	// 部分编辑器默认会加上它，而 encoding/json 对 BOM 直接报错。
+	// 报错的后果极其严重——见下面解析失败分支。
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+
+	// 空文件（或只有空白/BOM）不是损坏，直接当空池启动，不必留备份文件。
+	if len(bytes.TrimSpace(data)) == 0 {
 		pool = &AccountPool{Accounts: []*Account{}, Keys: []string{}}
 		return pool
 	}
 
 	var p AccountPool
 	if err := json.Unmarshal(data, &p); err != nil {
+		// 绝不静默换成空池：只要进程继续跑，任何一次写操作（addAccount、
+		// pickAccount 的用量落盘、改配置…）都会把账号文件覆盖成空池，
+		// 用户的账号就永久没了。先把原文件改名留证，再以空池启动。
+		backup := fmt.Sprintf("%s.corrupt-%d", poolPath, time.Now().Unix())
+		if rerr := os.Rename(poolPath, backup); rerr != nil {
+			log.Printf("Accounts file %s is not valid JSON (%v) and could not be backed up: %v", poolPath, err, rerr)
+		} else {
+			log.Printf("Accounts file %s is not valid JSON (%v); kept it as %s and started with an empty pool", poolPath, err, backup)
+		}
 		pool = &AccountPool{Accounts: []*Account{}, Keys: []string{}}
 		return pool
 	}
@@ -47,17 +71,83 @@ func loadPool() *AccountPool {
 	if p.Keys == nil {
 		p.Keys = []string{}
 	}
+
+	// 一次性迁移：旧版本把 429 限流写进账号级 Status="cooldown" 并持久化，
+	// 而现在冷却已改为「账号×模型」级（见 cooldown.go），没有任何代码会把
+	// Status 写回 "active"，而 pickAccount 又会跳过一切非 active 账号——
+	// 若不迁移，升级前被标过 cooldown 的账号将永久不可用。
+	for _, a := range p.Accounts {
+		if a.Status == "cooldown" {
+			a.Status = "active"
+		}
+	}
+
 	pool = &p
 	return pool
 }
 
-func savePool() error {
-	data, _ := json.MarshalIndent(pool, "", "  ")
-	if err := os.WriteFile(poolPath, data, 0600); err != nil {
+// saveMu 只序列化「写文件」这一步：两个 goroutine 同时写同一个文件会互相截断，
+// 落盘结果变成两段 JSON 拼接，而 loadPool 对解析失败是静默换成空池，
+// 下次启动就等于「账号全没了」。
+var saveMu sync.Mutex
+
+// marshalPool 把账号池序列化成 JSON。
+//
+// 必须在持有 poolMu 时调用：pool 是全局共享对象，其他 goroutine 会在池锁内
+// append 切片、改字段，锁外读它的切片头属于数据竞争，可能撕出一个非法
+// 指针直接 panic。
+func marshalPool() ([]byte, error) {
+	data, err := json.MarshalIndent(pool, "", "  ")
+	if err != nil {
+		log.Printf("Failed to marshal accounts: %v", err)
+	}
+	return data, err
+}
+
+// writePoolFile 把已序列化的内容原子地写入磁盘：先写临时文件，再 rename 覆盖。
+//
+// 旧实现直接 os.WriteFile（O_TRUNC），两个并发调用会互相截断；
+// 原子替换消除了这种可能。临时文件名带 pid，避免两个进程共用同一个
+// 账号池路径时互相踩对方的临时文件。
+func writePoolFile(data []byte) error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+
+	tmp := fmt.Sprintf("%s.%d.tmp", poolPath, os.Getpid())
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		log.Printf("Failed to save accounts: %v", err)
 		return err
 	}
+	if err := os.Rename(tmp, poolPath); err != nil {
+		log.Printf("Failed to replace accounts file: %v", err)
+		os.Remove(tmp)
+		return err
+	}
 	return nil
+}
+
+// savePool 在池锁内序列化、在池锁外落盘。
+//
+// 调用方不得持有 poolMu——这里会取它。两个锁从不嵌套（poolMu 只包 marshal，
+// saveMu 只包 write），所以不存在锁序死锁；已经持有 poolMu 的调用点必须改用
+// savePoolLocked，否则会自锁死。
+func savePool() error {
+	poolMu.Lock()
+	data, err := marshalPool()
+	poolMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return writePoolFile(data)
+}
+
+// savePoolLocked 供已经持有 poolMu 的调用点使用（pickAccount、models.go 的写操作等）。
+func savePoolLocked() error {
+	data, err := marshalPool()
+	if err != nil {
+		return err
+	}
+	return writePoolFile(data)
 }
 
 func addAccount(acc *Account) {
@@ -76,7 +166,7 @@ func removeAccount(accountID string) bool {
 	for i, a := range p.Accounts {
 		if a.AccountID == accountID {
 			p.Accounts = append(p.Accounts[:i], p.Accounts[i+1:]...)
-			savePool()
+			savePoolLocked()
 			return true
 		}
 	}
@@ -96,20 +186,29 @@ func getAccountByID(accountID string) *Account {
 	return nil
 }
 
+// refreshAccountToken 刷新账号 token 并落盘。
+//
+// 网络请求在 poolMu 之外，字段写入在 poolMu 之内：savePool 自己会取 poolMu，
+// 所以必须先解锁再落盘（持锁调用 savePool 会自锁死）。
 func refreshAccountToken(acc *Account) error {
 	resp, err := refreshClineToken(acc.RefreshToken)
 	if err != nil {
+		poolMu.Lock()
 		acc.Status = "expired"
+		poolMu.Unlock()
 		savePool()
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
 
+	poolMu.Lock()
 	acc.AccessToken = "workos:" + resp.Data.AccessToken
 	if resp.Data.RefreshToken != "" {
 		acc.RefreshToken = resp.Data.RefreshToken
 	}
 	acc.ExpiresAt = parseExpiry(resp.Data.ExpiresAt) - 60000
 	acc.Status = "active"
+	poolMu.Unlock()
+
 	savePool()
 	return nil
 }
@@ -162,12 +261,15 @@ func pickAccount(modelID string) *Account {
 		p.CurrentIdx = (p.CurrentIdx + 1) % len(active)
 	}
 
-	savePool()
+	savePoolLocked()
 	return acc
 }
 
 func ensureAccountToken(acc *Account) (string, error) {
-	if acc.AccessToken != "" && time.Now().UnixMilli() < acc.ExpiresAt {
+	poolMu.Lock()
+	cached := acc.AccessToken != "" && time.Now().UnixMilli() < acc.ExpiresAt
+	poolMu.Unlock()
+	if cached {
 		return acc.AccessToken, nil
 	}
 
@@ -176,6 +278,36 @@ func ensureAccountToken(acc *Account) (string, error) {
 	}
 
 	return acc.AccessToken, nil
+}
+
+// cooldownMinutes 返回当前生效的冷却时长（分钟），带默认值兜底。
+// 存放在账号池文件里，因此跨重启保留。
+func cooldownMinutes() int {
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if p.CooldownMinutes <= 0 {
+		return defaultCooldownMinutes
+	}
+	return p.CooldownMinutes
+}
+
+// setCooldownMinutes 持久化冷却时长；写盘失败时回滚内存值。
+func setCooldownMinutes(m int) error {
+	p := loadPool()
+	poolMu.Lock()
+	prev := p.CooldownMinutes
+	p.CooldownMinutes = m
+	poolMu.Unlock()
+
+	if err := savePool(); err != nil {
+		// 回滚也要在锁内：池锁外的写入会与 marshal 竞争。
+		poolMu.Lock()
+		p.CooldownMinutes = prev
+		poolMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func listAccounts() []*Account {

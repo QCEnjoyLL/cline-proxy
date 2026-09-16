@@ -84,7 +84,12 @@ func startProxy(port int) error {
 		return corsHandler(func(w http.ResponseWriter, r *http.Request) {
 			// Allow requests without key if no keys configured
 			p := loadPool()
-			if len(p.Keys) == 0 {
+			// Keys 是共享切片，管理面板随时可能生成/删除密钥（append 会换
+			// 底层数组），所以持池锁取一份快照再遍历。
+			poolMu.Lock()
+			keys := append([]string(nil), p.Keys...)
+			poolMu.Unlock()
+			if len(keys) == 0 {
 				next(w, r)
 				return
 			}
@@ -97,7 +102,7 @@ func startProxy(port int) error {
 			}
 
 			valid := false
-			for _, k := range p.Keys {
+			for _, k := range keys {
 				if k == key {
 					valid = true
 					break
@@ -278,6 +283,18 @@ func cleanMessages(messages []any) []any {
 	return cleaned
 }
 
+// effectiveModel 返回本次请求实际会发给上游的模型 ID。
+//
+// 客户端未指定 model 时回退到默认模型。这个判断必须是唯一实现：
+// 冷却键（pickAccount / cooldowns.mark）与请求体（buildUpstreamBody）
+// 都要用它，否则两处漂移会导致冷却标记到一个永远不会被查询的 key。
+func effectiveModel(params map[string]any) string {
+	if m, ok := params["model"].(string); ok && m != "" {
+		return m
+	}
+	return getDefaultModel()
+}
+
 func buildUpstreamBody(params map[string]any, stream bool) map[string]any {
 	sessionID := fmt.Sprintf("sess_%d", time.Now().UnixMilli())
 
@@ -288,10 +305,7 @@ func buildUpstreamBody(params map[string]any, stream bool) map[string]any {
 		maxTokens = int(mt)
 	}
 
-	model := getDefaultModel()
-	if m, ok := params["model"].(string); ok && m != "" {
-		model = m
-	}
+	model := effectiveModel(params)
 
 	body := map[string]any{
 		"model":        model,
@@ -342,8 +356,9 @@ func clineHeaders(token, sessionID string) http.Header {
 }
 
 func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
-	// 请求的目标模型决定冷却过滤的粒度
-	model, _ := params["model"].(string)
+	// 冷却过滤与冷却标记都用「实际发给上游的模型」（见 effectiveModel），
+	// 两者必须一致，否则冷却会标记到永远不会被查询的 key。
+	model := effectiveModel(params)
 	acc := pickAccount(model)
 	if acc == nil {
 		return nil, fmt.Errorf("no active accounts available. Use --login or admin API to add accounts")
@@ -391,19 +406,30 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 		// Refresh token and retry
 		if err := refreshAccountToken(acc); err == nil {
 			token = acc.AccessToken
-			req.Header = clineHeaders(token, sessionID)
-			resp, err = httpClient.Do(req)
+			// 必须重建请求：原 req.Body 已被首次发送消费并关闭，
+			// 复用同一个 *http.Request 重试会因 body 长度不符而失败，
+			// 导致 token 刷新后仍然报错（旧实现在这里永远重试不成功）。
+			retryReq, rerr := http.NewRequest("POST", clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
+			if rerr != nil {
+				return nil, fmt.Errorf("rebuild retry request: %w", rerr)
+			}
+			retryReq.Header = clineHeaders(token, sessionID)
+			resp, err = httpClient.Do(retryReq)
 			if err != nil {
 				return nil, fmt.Errorf("upstream retry: %w", err)
 			}
 			if resp.StatusCode == 401 {
 				resp.Body.Close()
+				poolMu.Lock()
 				acc.Status = "expired"
+				poolMu.Unlock()
 				savePool()
 				return nil, fmt.Errorf("account %s token expired permanently", acc.Email)
 			}
 		} else {
+			poolMu.Lock()
 			acc.Status = "expired"
+			poolMu.Unlock()
 			savePool()
 			return nil, fmt.Errorf("account %s refresh failed: %w", acc.Email, err)
 		}
@@ -415,9 +441,9 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 		if resp.StatusCode == 429 {
 			// 只冷却「该账号 × 该模型」这一组合，到点自动恢复；
 			// 同账号的其它模型不受影响（上游按模型独立计额）。
-			cooldowns.mark(acc.AccountID, model, time.Now())
+			ttl := markCooldown(acc.AccountID, model)
 			log.Printf("  cooldown: %s x %s for %s",
-				truncateEmail(acc.Email), model, cooldownTTL())
+				truncateEmail(acc.Email), model, ttl)
 		}
 		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
 	}

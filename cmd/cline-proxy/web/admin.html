@@ -629,6 +629,19 @@ html.theme-anim,html.theme-anim *{
     </table>
   </div>
 </div>
+<div class="section">
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-zap"/></svg>限流冷却（账号 × 模型）<span style="margin-left:8px;color:var(--text2);font-weight:400;font-size:11.5px">该组合到点前不参与轮询</span></div>
+  <div class="section-body" style="padding:0">
+    <table>
+      <thead>
+        <tr><th>账号</th><th>模型</th><th>剩余</th><th>恢复时间</th></tr>
+      </thead>
+      <tbody id="cooldownTableBody">
+        <tr><td colspan="4" class="empty">加载中...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 </div>
 
 <div id="tab-import" class="tab-panel" style="display:none">
@@ -871,6 +884,7 @@ async function loadStats() {
 
 // ========== 账号管理 ==========
 async function loadAccounts() {
+  loadCooldowns(); // 冷却状态与账号列表一起刷新（两个独立请求，互不阻塞）
   try {
     const d = await api('GET', '/accounts');
     const list = d.data.accounts;
@@ -906,6 +920,38 @@ async function loadAccounts() {
         '</td></tr>';
     }).join('');
   } catch (e) { toast('加载账号失败: ' + e.message, 'error'); }
+}
+
+// 冷却状态：粒度是「账号 × 模型」——同账号的其它模型不受影响，到点自动恢复。
+async function loadCooldowns() {
+  const tbody = _('cooldownTableBody');
+  if (!tbody) return;
+  try {
+    const d = await api('GET', '/cooldowns');
+    const list = d.data.cooldowns || [];
+    if (list.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">当前没有处于冷却的「账号 × 模型」组合</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(c =>
+      '<tr>' +
+        '<td class="mono" style="font-size:11px">' + esc(c.accountId) + '</td>' +
+        '<td class="mono" style="font-size:11px">' + esc(c.modelId) + '</td>' +
+        '<td>' + formatRemaining(c.remainingSec) + '</td>' +
+        '<td class="mono" style="font-size:11px">' + new Date(c.until).toLocaleTimeString('zh-CN') + '</td>' +
+      '</tr>'
+    ).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">读取冷却状态失败：' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function formatRemaining(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  if (s < 60) return s + ' 秒';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + ' 分 ' + (s % 60) + ' 秒';
+  return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
 }
 
 async function exportAccounts() {

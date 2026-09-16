@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,13 +22,15 @@ func TestCooldownMarkAndExpiry(t *testing.T) {
 	t.Cleanup(resetCooldowns)
 
 	now := time.Now()
-	cooldowns.mark("acc1", "vendor/modelA", now)
+	// 用真实默认值而非写死数字，避免默认值调整后测试失效
+	ttl := time.Duration(defaultCooldownMinutes) * time.Minute
+	cooldowns.mark("acc1", "vendor/modelA", now, ttl)
 
 	if !cooldowns.isCooling("acc1", "vendor/modelA", now.Add(time.Second)) {
 		t.Fatal("刚标记的组合应在冷却中")
 	}
-	// 默认 TTL 30 分钟，超过后应恢复
-	after := now.Add(31 * time.Minute)
+	// 默认 TTL 30 分钟，超过后应自动恢复
+	after := now.Add(ttl + time.Minute)
 	if cooldowns.isCooling("acc1", "vendor/modelA", after) {
 		t.Fatal("超过 TTL 后应自动恢复")
 	}
@@ -39,7 +42,7 @@ func TestCooldownIsPerModel(t *testing.T) {
 	t.Cleanup(resetCooldowns)
 
 	now := time.Now()
-	cooldowns.mark("acc1", "vendor/modelA", now)
+	cooldowns.mark("acc1", "vendor/modelA", now, time.Hour)
 
 	if !cooldowns.isCooling("acc1", "vendor/modelA", now.Add(time.Minute)) {
 		t.Fatal("modelA 应在冷却中")
@@ -58,9 +61,9 @@ func TestCooldownClearAccount(t *testing.T) {
 	t.Cleanup(resetCooldowns)
 
 	now := time.Now()
-	cooldowns.mark("acc1", "a/one", now)
-	cooldowns.mark("acc1", "a/two", now)
-	cooldowns.mark("acc2", "a/one", now)
+	cooldowns.mark("acc1", "a/one", now, time.Hour)
+	cooldowns.mark("acc1", "a/two", now, time.Hour)
+	cooldowns.mark("acc2", "a/one", now, time.Hour)
 
 	cooldowns.clearAccount("acc1")
 
@@ -96,7 +99,7 @@ func TestPickAccountSkipsCoolingModel(t *testing.T) {
 	}
 
 	// modelA 冷却：modelA 选不到
-	cooldowns.mark("acc_x", "vendor/modelA", now)
+	cooldowns.mark("acc_x", "vendor/modelA", now, time.Hour)
 	if acc := pickAccount("vendor/modelA"); acc != nil {
 		t.Fatal("模型冷却中不应选中该账号")
 	}
@@ -168,10 +171,11 @@ func TestEnableDisableAccountAPI(t *testing.T) {
 	if acc := pickAccount("vendor/m"); acc != nil {
 		t.Fatal("禁用后不应被选中")
 	}
-	// 标记已持久化
-	p2 := loadPool()
-	if !p2.Accounts[0].Disabled {
-		t.Fatal("禁用标记应写入账号池")
+	// 标记已落盘：先丢弃内存缓存再重载（loadPool 命中缓存会返回同一个对象，
+	// 不置 nil 的话断言读的是内存而不是文件，恒为真）
+	pool = nil
+	if p2 := loadPool(); len(p2.Accounts) != 1 || !p2.Accounts[0].Disabled {
+		t.Fatal("禁用标记应写入账号池文件")
 	}
 
 	// 重复禁用同一账号：幂等
@@ -180,7 +184,7 @@ func TestEnableDisableAccountAPI(t *testing.T) {
 	}
 
 	// 启用（同时清空冷却）
-	cooldowns.mark("acc_api", "vendor/m", time.Now())
+	cooldowns.mark("acc_api", "vendor/m", time.Now(), time.Hour)
 	if rec := post("/admin/api/accounts/enable", "acc_api"); rec.Code != http.StatusOK {
 		t.Fatalf("enable status = %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -197,18 +201,128 @@ func TestEnableDisableAccountAPI(t *testing.T) {
 	}
 }
 
-// 配置的 cooldownMinutes 生效：改短 TTL 后冷却提前结束。
-func TestCooldownTTLFromConfig(t *testing.T) {
+// cooldownMinutes 存于账号池并落盘；冷却 TTL 以该配置为准。
+func TestCooldownMinutesPersistAndApply(t *testing.T) {
+	useTemporaryPool(t)
 	resetCooldowns()
 	t.Cleanup(resetCooldowns)
 
-	cfg := getProxyConfig()
-	cfg.CooldownMinutes = 1
-	setProxyConfig(cfg)
+	// 未配置时使用默认值
+	if got := cooldownMinutes(); got != defaultCooldownMinutes {
+		t.Fatalf("默认冷却时长 = %d, want %d", got, defaultCooldownMinutes)
+	}
 
-	now := time.Now()
-	cooldowns.mark("acc1", "m", now)
-	if cooldowns.isCooling("acc1", "m", now.Add(90*time.Second)) {
+	if err := setCooldownMinutes(1); err != nil {
+		t.Fatalf("setCooldownMinutes: %v", err)
+	}
+	// 丢弃内存缓存强制从磁盘重载，验证写盘真的生效
+	pool = nil
+	if got := cooldownMinutes(); got != 1 {
+		t.Fatalf("重载后冷却时长 = %d, want 1", got)
+	}
+
+	// markCooldown 使用配置的时长：TTL=1 分钟 → 90 秒后应已恢复
+	markCooldown("acc1", "m")
+	if !cooldowns.isCooling("acc1", "m", time.Now()) {
+		t.Fatal("刚标记的组合应在冷却中")
+	}
+	if cooldowns.isCooling("acc1", "m", time.Now().Add(90*time.Second)) {
 		t.Fatal("TTL=1 分钟时 90 秒后应已恢复")
+	}
+}
+
+// 回归测试：effectiveModel 必须与实际发给上游的模型一致。
+//
+// 背景：冷却键由 pickAccount/cooldowns.mark 计算，请求体由 buildUpstreamBody 生成。
+// 若两处对「未指定 model」的处理不一致，客户端不传 model 时会标记到
+// 一个永远查不到的 key，冷却静默失效。
+func TestEffectiveModelMatchesUpstreamBody(t *testing.T) {
+	useTemporaryPool(t)
+	resetCooldowns()
+	t.Cleanup(resetCooldowns)
+
+	// 客户端指定模型：完全采用客户端的值
+	params := map[string]any{"model": "vendor/explicit", "messages": []any{}}
+	if got := effectiveModel(params); got != "vendor/explicit" {
+		t.Fatalf("指定模型时 effectiveModel = %q", got)
+	}
+	if body := buildUpstreamBody(params, false); body["model"] != "vendor/explicit" {
+		t.Fatalf("请求体模型 = %v", body["model"])
+	}
+
+	// 客户端未指定模型（缺字段 / 空串）：都应回退到默认模型，且两处保持一致
+	for _, p := range []map[string]any{
+		{"messages": []any{}},
+		{"model": "", "messages": []any{}},
+	} {
+		want := getDefaultModel()
+		got := effectiveModel(p)
+		if got != want {
+			t.Fatalf("未指定模型时应回退到默认模型 %q，实际 %q", want, got)
+		}
+		if b := buildUpstreamBody(p, false); b["model"] != got {
+			t.Fatalf("请求体模型 %v 与冷却键模型 %q 不一致", b["model"], got)
+		}
+		// 两处一致才意味着：用 effectiveModel 标记的冷却能被同 key 查到
+		cooldowns.mark("acc_k", got, time.Now(), time.Hour)
+		if !cooldowns.isCooling("acc_k", got, time.Now()) {
+			t.Fatal("用 effectiveModel 标记的冷却应能被同 key 查询")
+		}
+		cooldowns.clearAccount("acc_k")
+	}
+}
+
+// 契约测试：/admin/api/cooldowns 的字段名必须与 web/admin.html 读取的一致
+// （accountId / modelId / until / remainingSec）；改了字段名前端会静默显示空表。
+func TestCooldownsEndpointShape(t *testing.T) {
+	resetCooldowns()
+	t.Cleanup(resetCooldowns)
+
+	cooldowns.mark("acc_s", "vendor/modelA", time.Now(), time.Hour)
+
+	rec := httptest.NewRecorder()
+	handleAdminCooldowns(rec, httptest.NewRequest(http.MethodGet, "/admin/api/cooldowns", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Cooldowns []struct {
+				AccountID    string `json:"accountId"`
+				ModelID      string `json:"modelId"`
+				Until        int64  `json:"until"`
+				RemainingSec int64  `json:"remainingSec"`
+			} `json:"cooldowns"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, rec.Body.String())
+	}
+	if !resp.Success || len(resp.Data.Cooldowns) != 1 {
+		t.Fatalf("响应不符合预期（success=%v, n=%d）：%s", resp.Success, len(resp.Data.Cooldowns), rec.Body.String())
+	}
+	c := resp.Data.Cooldowns[0]
+	if c.AccountID != "acc_s" || c.ModelID != "vendor/modelA" {
+		t.Fatalf("字段不匹配：%+v", c)
+	}
+	if c.RemainingSec <= 0 || c.RemainingSec > 3600 {
+		t.Fatalf("remainingSec = %d", c.RemainingSec)
+	}
+	if c.Until <= time.Now().UnixMilli() {
+		t.Fatalf("until 应指向未来：%d", c.Until)
+	}
+}
+
+// 该端点只读：非 GET 必须拒绝，避免误用写方法。
+func TestCooldownsEndpointRejectsPost(t *testing.T) {
+	resetCooldowns()
+	t.Cleanup(resetCooldowns)
+
+	rec := httptest.NewRecorder()
+	handleAdminCooldowns(rec, httptest.NewRequest(http.MethodPost, "/admin/api/cooldowns", strings.NewReader("{}")))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
 	}
 }
