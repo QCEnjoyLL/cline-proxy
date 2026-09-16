@@ -114,16 +114,29 @@ func refreshAccountToken(acc *Account) error {
 	return nil
 }
 
-func pickAccount() *Account {
+// pickAccount 从池中选一个可用账号。
+//
+// modelID 用于「账号×模型」级冷却过滤：某账号的该模型在冷却中就跳过，
+// 同账号的其它模型不受影响。modelID 为空时只按账号级状态过滤。
+// 手动禁用（Disabled）的账号任何模型都不参与轮询。
+func pickAccount(modelID string) *Account {
 	p := loadPool()
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
-	active := make([]*Account, 0)
+	now := time.Now()
+	active := make([]*Account, 0, len(p.Accounts))
 	for _, a := range p.Accounts {
-		if a.Status == "active" {
-			active = append(active, a)
+		if a.Disabled {
+			continue // 用户手动禁用：不自动恢复
 		}
+		if a.Status != "active" {
+			continue // expired 等账号级故障仍跳过
+		}
+		if modelID != "" && cooldowns.isCooling(a.AccountID, modelID, now) {
+			continue // 该模型的额度在冷却中，换下一个账号
+		}
+		active = append(active, a)
 	}
 
 	if len(active) == 0 {
@@ -182,6 +195,7 @@ func listAccounts() []*Account {
 			AccountID:       a.AccountID,
 			Email:           a.Email,
 			Status:          a.Status,
+			Disabled:        a.Disabled, // 必须带上，否则前端看不到手动禁用状态
 			LastUsed:        a.LastUsed,
 			UsageCount:      a.UsageCount,
 			DailyUsageCount: dailyUsageCount,

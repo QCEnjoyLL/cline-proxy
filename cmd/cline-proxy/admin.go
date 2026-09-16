@@ -244,6 +244,9 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/accounts/refresh-all", corsHandler(handleAdminRefreshAll))
 	mux.HandleFunc("/admin/api/accounts/delete-all", corsHandler(handleAdminDeleteAll))
 	mux.HandleFunc("/admin/api/accounts/reset", corsHandler(handleAdminAccountReset))
+	mux.HandleFunc("/admin/api/accounts/enable", corsHandler(handleAdminAccountEnable))
+	mux.HandleFunc("/admin/api/accounts/disable", corsHandler(handleAdminAccountDisable))
+	mux.HandleFunc("/admin/api/cooldowns", corsHandler(handleAdminCooldowns))
 	mux.HandleFunc("/admin/api/keys", corsHandler(handleAdminGetKeys))
 	mux.HandleFunc("/admin/api/keys/generate", corsHandler(handleAdminGenerateKey))
 	mux.HandleFunc("/admin/api/keys/delete", corsHandler(handleAdminDeleteKey))
@@ -759,16 +762,126 @@ func handleAdminAccountReset(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "Account reset"})
 }
 
+// accountEnabledDisabled 是 enable/disable 两个 handler 共用的请求体。
+type accountEnabledDisabled struct {
+	AccountID string `json:"accountId"`
+}
+
+// setAccountDisabled 设置账号的手动禁用标记并持久化。
+// 返回 (是否找到账号, 错误)。
+//
+// 冷却的清理放在「启用」分支：启用意味着用户要让账号真正回到轮询，
+// 此时必须清掉它的全部冷却记录，否则会顶着旧冷却继续被跳过。
+// 禁用时不清理也无妨——禁用的账号本就不会被选中。
+func setAccountDisabled(accountID string, disabled bool) (bool, error) {
+	acc := getAccountByID(accountID)
+	if acc == nil {
+		return false, nil
+	}
+	poolMu.Lock()
+	acc.Disabled = disabled
+	poolMu.Unlock()
+	if err := savePool(); err != nil {
+		acc.Disabled = !disabled // 回滚内存态
+		return true, err
+	}
+	if !disabled {
+		cooldowns.clearAccount(accountID)
+	}
+	return true, nil
+}
+
+// POST /admin/api/accounts/enable  body: { accountId }
+// 手动启用：清掉禁用标记与全部冷却，账号立即回到轮询。
+func handleAdminAccountEnable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeAPI(w, http.StatusBadRequest, apiResponse{Error: err.Error()})
+		return
+	}
+	defer r.Body.Close()
+	var req accountEnabledDisabled
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})
+		return
+	}
+	found, err := setAccountDisabled(req.AccountID, false)
+	if err != nil {
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
+		return
+	}
+	if !found {
+		writeAPI(w, http.StatusNotFound, apiResponse{Error: "account not found"})
+		return
+	}
+	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "Account enabled"})
+}
+
+// POST /admin/api/accounts/disable  body: { accountId }
+// 手动禁用：不参与轮询且不会自动恢复，直到再次启用。
+func handleAdminAccountDisable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeAPI(w, http.StatusBadRequest, apiResponse{Error: err.Error()})
+		return
+	}
+	defer r.Body.Close()
+	var req accountEnabledDisabled
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})
+		return
+	}
+	found, err := setAccountDisabled(req.AccountID, true)
+	if err != nil {
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
+		return
+	}
+	if !found {
+		writeAPI(w, http.StatusNotFound, apiResponse{Error: "account not found"})
+		return
+	}
+	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "Account disabled"})
+}
+
 // Global proxy config (mutable via API)
 var (
 	proxyConfig   = defaultProxyConfig()
 	proxyConfigMu sync.Mutex
 )
 
+// GET /admin/api/cooldowns
+// 返回当前全部「账号×模型」冷却记录（含剩余秒数），供面板展示。
+func handleAdminCooldowns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
+		return
+	}
+	entries := cooldowns.snapshot(time.Now())
+	if entries == nil {
+		entries = []cooldownEntry{}
+	}
+	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
+		"cooldowns": entries,
+	}})
+}
+
 type proxyConfigData struct {
 	Strategy string            `json:"strategy"`
 	Headers  map[string]string `json:"headers"`
+	// CooldownMinutes 是「账号×模型」级 429 冷却的自动恢复时长。
+	// 0 或负数表示用默认值（30 分钟）。
+	CooldownMinutes int `json:"cooldownMinutes,omitempty"`
 }
+
+const defaultCooldownMinutes = 30
 
 func defaultProxyConfig() *proxyConfigData {
 	return &proxyConfigData{
@@ -855,13 +968,18 @@ func handleAdminDeleteKey(w http.ResponseWriter, r *http.Request) {
 // GET /admin/api/config
 func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := getProxyConfig()
+	minutes := cfg.CooldownMinutes
+	if minutes <= 0 {
+		minutes = defaultCooldownMinutes
+	}
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
-		"address":      "127.0.0.1:3457",
-		"strategy":     cfg.Strategy,
-		"version":      "go-1.1",
-		"poolPath":     poolPath,
-		"defaultModel": getDefaultModel(),
-		"headers":      cfg.Headers,
+		"address":          "127.0.0.1:3457",
+		"strategy":         cfg.Strategy,
+		"version":          "go-1.1",
+		"poolPath":         poolPath,
+		"defaultModel":     getDefaultModel(),
+		"headers":          cfg.Headers,
+		"cooldownMinutes":  minutes,
 	}})
 }
 
@@ -879,9 +997,10 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req struct {
-		Strategy     string            `json:"strategy"`
-		Headers      map[string]string `json:"headers"`
-		DefaultModel *string           `json:"defaultModel"`
+		Strategy        string            `json:"strategy"`
+		Headers         map[string]string `json:"headers"`
+		DefaultModel    *string           `json:"defaultModel"`
+		CooldownMinutes *int              `json:"cooldownMinutes"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})
@@ -914,7 +1033,6 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.Strategy = req.Strategy
 		changed = true
 	}
-
 	if req.Headers != nil {
 		for k, v := range req.Headers {
 			cfg.Headers[k] = v
@@ -922,14 +1040,31 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		changed = true
 	}
 
+	if req.CooldownMinutes != nil {
+		// 允许 1~1440（1 分钟到 1 天）；0 视为恢复默认
+		m := *req.CooldownMinutes
+		if m < 0 || m > 1440 {
+			writeAPI(w, http.StatusBadRequest, apiResponse{Error: "cooldownMinutes must be 0-1440"})
+			return
+		}
+		if m == 0 {
+			m = defaultCooldownMinutes
+		}
+		cfg.CooldownMinutes = m
+		changed = true
+		// 时长变更立即清空旧冷却，避免用新 TTL 解释旧记录
+		cooldowns.clearAll()
+	}
+
 	if changed {
 		setProxyConfig(cfg)
 	}
 
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
-		"strategy":     cfg.Strategy,
-		"headers":      cfg.Headers,
-		"defaultModel": getDefaultModel(),
+		"strategy":        cfg.Strategy,
+		"headers":         cfg.Headers,
+		"defaultModel":    getDefaultModel(),
+		"cooldownMinutes": func() int { if cfg.CooldownMinutes <= 0 { return defaultCooldownMinutes }; return cfg.CooldownMinutes }(),
 	}})
 }
 

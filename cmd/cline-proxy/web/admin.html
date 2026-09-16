@@ -179,10 +179,12 @@ tbody tr:last-child td{border-bottom:0}
 .status.active{background:var(--green-soft);color:var(--green)}
 .status.cooldown{background:var(--yellow-soft);color:var(--yellow)}
 .status.expired{background:var(--red-soft);color:var(--red)}
+.status.disabled{background:var(--bg3);color:var(--text2)}
 .status-dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:none}
 .status-dot.active{background:var(--green)}
 .status-dot.cooldown{background:var(--yellow)}
 .status-dot.expired{background:var(--red)}
+.status-dot.disabled{background:var(--text2)}
 
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
@@ -746,8 +748,15 @@ html.theme-anim,html.theme-anim *{
       <div class="field"><label>引擎版本</label><input type="text" id="settingVersion" disabled></div>
     </div>
     <div class="form-row">
+      <div class="field">
+        <label>429 冷却恢复（分钟，账号×模型级）</label>
+        <input type="number" id="settingCooldown" min="1" max="1440" onchange="updateConfig()" placeholder="30">
+      </div>
       <div class="field"><label>账号文件</label><input type="text" id="settingPoolPath" disabled></div>
     </div>
+    <p style="color:var(--text2);font-size:12px;margin-top:2px">
+      收到 429 限流时只冷却「该账号 × 该模型」组合（其它模型不受影响），并在此时长后自动恢复。修改后立即生效并清空现有冷却。
+    </p>
   </div>
 </div>
 
@@ -874,14 +883,24 @@ async function loadAccounts() {
     tbody.innerHTML = list.map(a => {
       const lu = a.lastUsed ? new Date(a.lastUsed).toLocaleString('zh-CN') : '-';
       const cr = a.createdAt ? new Date(a.createdAt).toLocaleString('zh-CN') : '-';
-      return '<tr>' +
+      const dis = !!a.disabled;
+      // 状态徽章：手动禁用优先于自动状态（禁用的账号不参与轮询）
+      const badge = dis
+        ? '<span class="status disabled"><span class="status-dot disabled"></span>已禁用</span>'
+        : '<span class="status ' + a.status + '"><span class="status-dot ' + a.status + '"></span>' + (sn[a.status] || a.status) + '</span>';
+      // 操作按钮：禁用态显示「启用」，正常态显示「禁用」
+      const toggle = dis
+        ? '<button class="btn btn-sm btn-success" onclick="setAccountEnabled(\'' + a.accountId + '\')" title="启用（参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></button> '
+        : '<button class="btn btn-sm" onclick="setAccountDisabledClick(\'' + a.accountId + '\')" title="禁用（不参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg></button> ';
+      return '<tr' + (dis ? ' style="opacity:.55"' : '') + '>' +
         '<td>' + esc(a.email) + '</td>' +
-        '<td><span class="status ' + a.status + '"><span class="status-dot ' + a.status + '"></span>' + (sn[a.status] || a.status) + '</span></td>' +
+        '<td>' + badge + '</td>' +
         '<td>' + (a.dailyUsageCount || 0) + '</td>' +
         '<td>' + (a.usageCount || 0) + '</td>' +
         '<td class="mono" style="font-size:11px">' + lu + '</td>' +
         '<td class="mono" style="font-size:11px">' + cr + '</td>' +
         '<td style="white-space:nowrap">' +
+          toggle +
           '<button class="btn btn-sm" onclick="resetAccount(\'' + a.accountId + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
           '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + a.accountId + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
         '</td></tr>';
@@ -918,6 +937,24 @@ async function deleteAccount(id) {
     loadAccounts(); loadStats();
   } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
+
+async function setAccountDisabledClick(id) {
+  if (!confirm('禁用后此账号不参与轮询（不会自动恢复），确定禁用？')) return;
+  try {
+    await api('POST', '/accounts/disable', { accountId: id });
+    toast('账号已禁用', 'success');
+    loadAccounts(); loadStats();
+  } catch (e) { toast('禁用失败: ' + e.message, 'error'); }
+}
+
+async function setAccountEnabled(id) {
+  try {
+    await api('POST', '/accounts/enable', { accountId: id });
+    toast('账号已启用，恢复轮询', 'success');
+    loadAccounts(); loadStats();
+  } catch (e) { toast('启用失败: ' + e.message, 'error'); }
+}
+
 
 async function resetAccount(id) {
   if (!confirm('确定重置此账号？将清除今日使用计数和总使用计数，并刷新 Token。')) return;
@@ -1098,9 +1135,21 @@ function copyText(t) {
 // ========== 配置管理 ==========
 async function updateConfig() {
   const strategy = _('settingStrategy').value;
+  const cdRaw = _('settingCooldown').value.trim();
+  const body = { strategy };
+  // 冷却时长为空时不提交（避免把未填写的字段当成 0 覆盖）
+  if (cdRaw !== '') {
+    const m = parseInt(cdRaw, 10);
+    if (isNaN(m) || m < 1 || m > 1440) {
+      toast('冷却时长须为 1-1440 分钟', 'error');
+      await loadConfig();
+      return;
+    }
+    body.cooldownMinutes = m;
+  }
   try {
-    await api('POST', '/config/update', { strategy });
-    toast('策略已更新为: ' + strategy, 'success');
+    await api('POST', '/config/update', body);
+    toast(cdRaw !== '' ? '策略与冷却时长已更新' : '策略已更新为: ' + strategy, 'success');
   } catch (e) { toast('更新失败: ' + e.message, 'error'); }
 }
 
@@ -1432,7 +1481,8 @@ async function loadConfig() {
     if (c.address) _('settingAddr').value = c.address;
     if (c.strategy) _('settingStrategy').value = c.strategy;
     if (c.version) _('settingVersion').value = c.version;
-    if (c.poolPath) _('settingPoolPath').value = c.poolPath;
+    if (c.strategy) _('settingStrategy').value = c.strategy;
+    if (c.cooldownMinutes) _('settingCooldown').value = c.cooldownMinutes;
     if (c.defaultModel) {
       _('settingDefModel').dataset.selected = c.defaultModel;
       _('settingDefModel').value = c.defaultModel;

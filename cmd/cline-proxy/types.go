@@ -14,6 +14,9 @@ type Account struct {
 	DailyUsageCount int64     `json:"dailyUsageCount"`
 	DailyUsageDate  string    `json:"dailyUsageDate,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
+	// Disabled 是用户手动禁用标记，与 Status 的自动冷却互不相干：
+	// 禁用不自动恢复，冷却按 CooldownMinutes 到点自动回池。
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 type AccountPool struct {

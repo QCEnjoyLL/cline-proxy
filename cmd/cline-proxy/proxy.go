@@ -342,7 +342,9 @@ func clineHeaders(token, sessionID string) http.Header {
 }
 
 func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
-	acc := pickAccount()
+	// 请求的目标模型决定冷却过滤的粒度
+	model, _ := params["model"].(string)
+	acc := pickAccount(model)
 	if acc == nil {
 		return nil, fmt.Errorf("no active accounts available. Use --login or admin API to add accounts")
 	}
@@ -354,6 +356,7 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 	}
 
 	body := buildUpstreamBody(params, stream)
+
 	sessionID, _ := body["session_id"].(string)
 
 	bodyJSON, err := json.Marshal(body)
@@ -378,8 +381,8 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		acc.Status = "cooldown"
-		savePool()
+		// 网络错误不代表账号额度问题：不冷却、不禁用，直接返回错误。
+		// 旧实现把网络抖动当成限流踢账号，一次断网就能下线整个账号池。
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 
@@ -409,13 +412,16 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 	if resp.StatusCode != 200 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		// Mark account on cooldown on rate limits
 		if resp.StatusCode == 429 {
-			acc.Status = "cooldown"
-			savePool()
+			// 只冷却「该账号 × 该模型」这一组合，到点自动恢复；
+			// 同账号的其它模型不受影响（上游按模型独立计额）。
+			cooldowns.mark(acc.AccountID, model, time.Now())
+			log.Printf("  cooldown: %s x %s for %s",
+				truncateEmail(acc.Email), model, cooldownTTL())
 		}
 		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
 	}
+
 
 	poolMu.Lock()
 	bumpAccountUsage(acc, time.Now())
