@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cline 代理管理面板</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2064%2064%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%230071e3%27%2F%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%235e5ce6%27%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%2764%27%20height%3D%2764%27%20rx%3D%2715%27%20fill%3D%27url(%23g)%27%2F%3E%3Cpath%20d%3D%27M36%209%20L19%2036h11l-2%2019%2017-27H34l2-19z%27%20fill%3D%27%23fff%27%2F%3E%3C%2Fsvg%3E">
 <style>
 /* ==========================================================================
    Cline 代理 · 设计系统
@@ -393,22 +394,133 @@ html.theme-anim,html.theme-anim *{
   .theme-toggle{font-size:0;padding:8px 0}
   .mgroup-head .gcount{margin-left:0}
 }
+
+/* ===== 图标系统：24×24 线性，继承 currentColor ===== */
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.ic,.ic-lg,.ic-title,.ic-inline,.ic-empty{
+  width:16px;height:16px;flex:none;display:inline-block;vertical-align:-.18em;
+  stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;
+  fill:none;overflow:visible;
+}
+.ic-lg{width:19px;height:19px;stroke-width:1.9}
+/* 面板/区块标题里的图标：中性色，靠字重立层级 */
+.ic-title{width:17px;height:17px;stroke-width:1.8;vertical-align:-.2em;margin-right:8px;opacity:.9}
+.ic-inline{width:13px;height:13px;stroke-width:2;vertical-align:-.16em;opacity:.7}
+.ic-empty{width:40px;height:40px;stroke-width:1.4;color:var(--text2);opacity:.7}
+/* 导航：未激活中性，激活时图标取强调色 */
+.nav-item .ic,.nav-item .ic-lg{color:var(--text2);transition:color var(--t-press) var(--ease-out)}
+.nav-item.active .ic,.nav-item.active .ic-lg{color:var(--accent)}
+.btn .ic{width:15px;height:15px;stroke-width:1.9;opacity:.9}
+.btn-primary .ic,.btn-success .ic,.btn-danger .ic{opacity:1}
+.brand-mark{
+  width:26px;height:26px;border-radius:8px;flex:none;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 58%,#7b61ff));
+  color:#fff;box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 30%,transparent);
+}
+.brand-mark .ic-lg{width:15px;height:15px;stroke-width:2.2;color:#fff}
+.empty-state .icon{display:flex;justify-content:center;margin-bottom:14px}
+
+/* ===== 页面标题：主标题 + 副标题 ===== */
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.page-head h2{margin-bottom:0}
+.page-sub{font-size:12.5px;color:var(--text2);margin-top:5px;letter-spacing:.002em}
+
+/* ===== 统计卡：图标徽章 + 大数字 ===== */
+.card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.stat-ic{
+  width:32px;height:32px;border-radius:9px;flex:none;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:var(--bg3);color:var(--text2);
+  transition:transform var(--t-fast) var(--ease-out);
+}
+.stat-ic .ic{width:17px;height:17px;stroke-width:1.9}
+.stat-ic.blue{background:var(--accent-soft);color:var(--accent)}
+.stat-ic.green{background:var(--green-soft);color:var(--green)}
+.stat-ic.yellow{background:var(--yellow-soft);color:var(--yellow)}
+.stat-ic.red{background:var(--red-soft);color:var(--red)}
+@media (hover:hover) and (pointer:fine){
+  .card:hover .stat-ic{transform:scale(1.08)}
+}
+
+/* ===== 快捷操作：磁贴卡片网格 ===== */
+.action-grid{
+  display:grid;gap:10px;
+  grid-template-columns:repeat(auto-fit,minmax(216px,1fr));
+}
+.action-card{
+  display:flex;align-items:center;gap:12px;text-align:left;
+  padding:13px 14px;border-radius:var(--radius);
+  background:var(--surface-solid);border:1px solid var(--border);
+  cursor:pointer;font-family:inherit;color:var(--text);
+  box-shadow:var(--shadow-sm);
+  transition:transform var(--t-press) var(--ease-out),
+             border-color var(--t-press) var(--ease-out),
+             box-shadow var(--t-press) var(--ease-out);
+}
+.action-card:active{transform:scale(.985)}
+.action-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (hover:hover) and (pointer:fine){
+  .action-card:hover{border-color:var(--accent);box-shadow:var(--shadow-md)}
+  .action-card:hover .action-ic{background:var(--accent);color:#fff}
+}
+.action-ic{
+  width:34px;height:34px;border-radius:10px;flex:none;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:var(--bg3);color:var(--text2);
+  transition:background var(--t-press) var(--ease-out),color var(--t-press) var(--ease-out);
+}
+.action-ic .ic{width:17px;height:17px;stroke-width:1.9}
+.action-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.action-txt strong{font-size:13.5px;font-weight:600;letter-spacing:-.008em}
+.action-txt em{font-style:normal;font-size:11.5px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.action-card.primary .action-ic{background:var(--accent);color:#fff}
+
+/* ===== 区块标题：图标改为中性色，靠字重立层 ===== */
+.section-title .ic-title{color:var(--text2);opacity:.85}
 </style>
 </head>
 <body>
+<svg class="sprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden"><defs>
+<symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-7"/></symbol>
+<symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/><path d="M9.5 1.5v3M14.5 1.5v3M9.5 19.5v3M14.5 19.5v3M1.5 9.5h3M1.5 14.5h3M19.5 9.5h3M19.5 14.5h3"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.2 5.2l1.9 1.9M16.9 16.9l1.9 1.9M18.8 5.2l-1.9 1.9M7.1 16.9l-1.9 1.9"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r="1.3"/><circle cx="4" cy="12" r="1.3"/><circle cx="4" cy="18" r="1.3"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6M20.5 3.5V9H15"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2.5H6.5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8z"/><path d="M14 2.5V8h5.5"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="16.5" cy="7.5" r="4.5"/><path d="m12.8 11.2-9.3 9.3V23h3v-2h2v-2h2l1.5-1.5"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+<symbol id="i-check-circle" viewBox="0 0 24 24"><path d="M22 11.1V12a10 10 0 1 1-5.9-9.1"/><path d="M22 4 12 14l-3-3"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-pencil" viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></symbol>
+<symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 21v-8"/></symbol>
+<symbol id="i-rocket" viewBox="0 0 24 24"><path d="M5 15c-1.5 1.5-2 5-2 5s3.5-.5 5-2c.8-.9.8-2.3 0-3.1-.8-.8-2.2-.8-3 .1z"/><path d="M15 9 9 15M12.5 3.5c3-1.5 6-1 8-1 0 2-.5 5-1 8-1 3.5-3.5 6-6.5 7L10 13z"/><circle cx="15" cy="9" r="1.6"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6"/></symbol>
+<symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v2.3M12 20.2v2.3M1.5 12h2.3M20.2 12h2.3M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M19.4 4.6l-1.6 1.6M6.2 17.8l-1.6 1.6"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+</defs></svg>
 <div class="layout">
 <div class="sidebar">
-<h1><span>⚡</span>Cline 代理</h1>
-<div class="nav-item active" data-tab="dashboard"><span>📊</span> 仪表盘</div>
-<div class="nav-item" data-tab="models"><span>🧠</span> 模型库</div>
-<div class="nav-item" data-tab="accounts"><span>👤</span> 账号管理</div>
-<div class="nav-item" data-tab="import"><span>📥</span> 导入账号</div>
-<div class="nav-item" data-tab="settings"><span>⚙️</span> 设置</div>
+<h1><span class="brand-mark"><svg class="ic-lg" aria-hidden="true"><use href="#i-zap"/></svg></span>Cline 代理</h1>
+<div class="nav-item active" data-tab="dashboard"><span><svg class="ic" aria-hidden="true"><use href="#i-chart"/></svg></span> 仪表盘</div>
+<div class="nav-item" data-tab="models"><span><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg></span> 模型库</div>
+<div class="nav-item" data-tab="accounts"><span><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg></span> 账号管理</div>
+<div class="nav-item" data-tab="import"><span><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg></span> 导入账号</div>
+<div class="nav-item" data-tab="settings"><span><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg></span> 设置</div>
 <div style="margin-top:auto;padding:16px;font-size:12px;color:var(--text2)">
   <div>管理面板: <a href="/admin/" style="color:var(--accent)">/admin/</a></div>
   <div>API 地址: <span id="footerApiAddr">http://127.0.0.1:3457</span></div>
   <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换配色主题">
-    <span id="themeIcon" aria-hidden="true">◐</span><span id="themeLabel">深色</span>
+    <span id="themeIcon" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#i-moon"/></svg></span><span id="themeLabel">深色</span>
   </button>
   <div style="margin-top:10px"><a class="btn btn-sm" href="/admin/logout">退出登录</a></div>
 </div>
@@ -417,36 +529,65 @@ html.theme-anim,html.theme-anim *{
 <div class="main">
 
 <div id="tab-dashboard" class="tab-panel">
-<h2>📊 仪表盘</h2>
+<div class="page-head">
+  <div>
+    <h2>仪表盘</h2>
+    <p class="page-sub">账号池的实时状态与常用操作</p>
+  </div>
+</div>
 <div class="cards">
-  <div class="card"><div class="num blue" id="statTotal">-</div><div class="label">账号总数</div></div>
-  <div class="card"><div class="num green" id="statActive">-</div><div class="label">活跃</div></div>
-  <div class="card"><div class="num yellow" id="statCooldown">-</div><div class="label">冷却</div></div>
-  <div class="card"><div class="num red" id="statExpired">-</div><div class="label">已过期</div></div>
+  <div class="card">
+    <div class="card-top"><span class="stat-ic blue"><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg></span></div>
+    <div class="num blue" id="statTotal">-</div><div class="label">账号总数</div>
+  </div>
+  <div class="card">
+    <div class="card-top"><span class="stat-ic green"><svg class="ic" aria-hidden="true"><use href="#i-check-circle"/></svg></span></div>
+    <div class="num green" id="statActive">-</div><div class="label">活跃</div>
+  </div>
+  <div class="card">
+    <div class="card-top"><span class="stat-ic yellow"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></span></div>
+    <div class="num yellow" id="statCooldown">-</div><div class="label">冷却中</div>
+  </div>
+  <div class="card">
+    <div class="card-top"><span class="stat-ic red"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg></span></div>
+    <div class="num red" id="statExpired">-</div><div class="label">已过期</div>
+  </div>
 </div>
 <div class="section">
-  <div class="section-title">📋 快捷操作</div>
-  <div class="section-body" style="display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn btn-primary" onclick="switchTab('import')">➕ 添加账号</button>
-    <button class="btn" onclick="refreshAllTokens()">🔄 刷新全部 Token</button>
-    <button class="btn" onclick="document.getElementById('fileInput').click()">📄 从文件导入</button>
+  <div class="section-title">快捷操作</div>
+  <div class="section-body action-grid">
+    <button class="action-card" onclick="switchTab('import')">
+      <span class="action-ic"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></span>
+      <span class="action-txt"><strong>添加账号</strong><em>OAuth / Token / 批量导入</em></span>
+    </button>
+    <button class="action-card" onclick="refreshAllTokens()">
+      <span class="action-ic"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></span>
+      <span class="action-txt"><strong>刷新全部 Token</strong><em>批量续期账号凭据</em></span>
+    </button>
+    <button class="action-card" onclick="document.getElementById('fileInput').click()">
+      <span class="action-ic"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg></span>
+      <span class="action-txt"><strong>从文件导入</strong><em>支持 .json / .txt</em></span>
+    </button>
+    <button class="action-card" onclick="switchTab('settings');generateKey()">
+      <span class="action-ic"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg></span>
+      <span class="action-txt"><strong>生成 API 密钥</strong><em>供客户端接入代理</em></span>
+    </button>
     <input type="file" id="fileInput" accept=".json,.txt" style="display:none" onchange="handleFileImport(event)">
-    <button class="btn" onclick="switchTab('settings');generateKey()">🔑 生成 API 密钥</button>
   </div>
 </div>
 </div>
 <div id="tab-models" class="tab-panel" style="display:none">
 <div class="flex justify-between" style="margin-bottom:16px">
-  <h2>🧠 模型库</h2>
+  <h2><svg class="ic-title" aria-hidden="true"><use href="#i-chip"/></svg>模型库</h2>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
     <span id="mStatus" style="font-size:12px;color:var(--text2);align-self:center"></span>
     <button class="btn btn-sm" id="mDescBtn" onclick="toggleModelDesc()">显示描述</button>
-    <button class="btn btn-sm" id="mRefreshBtn" onclick="loadRecommended(true)">🔄 刷新数据</button>
+    <button class="btn btn-sm" id="mRefreshBtn" onclick="loadRecommended(true)"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>刷新数据</button>
   </div>
 </div>
 
 <div class="section">
-  <div class="section-title">🧩 可用模型分组</div>
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-grid"/></svg>可用模型分组</div>
   <div class="section-body">
     <p style="color:var(--text2);margin-bottom:12px">
       数据来自 <span class="mono">api.cline.bot</span>（由代理服务端抓取，浏览器直连会被 CORS 拦截）。
@@ -457,9 +598,9 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div class="section">
-  <div class="section-title">✅ 已启用的模型</div>
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-check-circle"/></svg>已启用的模型</div>
   <div class="section-body">
-    <p style="color:var(--text2);margin-bottom:12px">默认模型始终保留；自定义模型会出现在 <span class="mono">/v1/models</span> 中。点击标签上的 ✕ 可移除。</p>
+    <p style="color:var(--text2);margin-bottom:12px">默认模型始终保留；自定义模型会出现在 <span class="mono">/v1/models</span> 中。点击标签上的 <svg class="ic ic-inline" aria-hidden="true"><use href="#i-x"/></svg> 可移除。</p>
     <div id="modelsList">加载中...</div>
   </div>
 </div>
@@ -467,11 +608,11 @@ html.theme-anim,html.theme-anim *{
 
 <div id="tab-accounts" class="tab-panel" style="display:none">
 <div class="flex justify-between" style="margin-bottom:16px">
-  <h2>👤 账号管理</h2>
+  <h2><svg class="ic-title" aria-hidden="true"><use href="#i-users"/></svg>账号管理</h2>
   <div style="display:flex;gap:8px">
-    <button class="btn btn-primary btn-sm" onclick="switchTab('import')">➕ 添加</button>
-    <button class="btn btn-sm" onclick="exportAccounts()">📤 批量导出</button>
-    <button class="btn btn-sm" onclick="loadAccounts()">🔄 刷新</button>
+    <button class="btn btn-primary btn-sm" onclick="switchTab('import')"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>添加</button>
+    <button class="btn btn-sm" onclick="exportAccounts()"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg>批量导出</button>
+    <button class="btn btn-sm" onclick="loadAccounts()"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
   </div>
 </div>
 <div class="section">
@@ -489,17 +630,17 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div id="tab-import" class="tab-panel" style="display:none">
-<h2>📥 导入账号</h2>
+<h2><svg class="ic-title" aria-hidden="true"><use href="#i-download"/></svg>导入账号</h2>
 <div class="section">
   <div class="tabs" id="importTabs">
-    <div class="tab active" data-tab="oauth">🔑 OAuth 浏览器登录</div>
-    <div class="tab" data-tab="token">✏️ 手动输入 Token</div>
-    <div class="tab" data-tab="batch">📦 批量导入</div>
+    <div class="tab active" data-tab="oauth"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg>OAuth 浏览器登录</div>
+    <div class="tab" data-tab="token"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg>手动输入 Token</div>
+    <div class="tab" data-tab="batch"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>批量导入</div>
   </div>
 
   <div id="import-oauth" class="tab-content active">
     <p style="color:var(--text2);margin-bottom:12px">通过浏览器完成 OAuth 认证，支持 Google/GitHub/邮箱登录，自动获取 refreshToken。</p>
-    <button class="btn btn-primary" onclick="startOAuth()" id="oauthBtn">🚀 开始 OAuth 登录</button>
+    <button class="btn btn-primary" onclick="startOAuth()" id="oauthBtn"><svg class="ic" aria-hidden="true"><use href="#i-rocket"/></svg>开始 OAuth 登录</button>
     <div id="oauthProgress" style="display:none;margin-top:12px">
       <div style="display:flex;align-items:center;gap:12px">
         <div class="loading"></div>
@@ -530,7 +671,7 @@ html.theme-anim,html.theme-anim *{
       </div>
     </div>
     <div class="form-actions">
-      <button class="btn btn-primary" onclick="addByToken()">➕ 添加账号</button>
+      <button class="btn btn-primary" onclick="addByToken()"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>添加账号</button>
     </div>
     <div id="tokenResult" style="margin-top:8px"></div>
   </div>
@@ -544,8 +685,8 @@ html.theme-anim,html.theme-anim *{
       </div>
     </div>
     <div class="form-actions">
-      <button class="btn btn-primary" onclick="batchImport()">📦 导入全部</button>
-      <button class="btn" onclick="document.getElementById('fileInput2').click()">📄 选择文件</button>
+      <button class="btn btn-primary" onclick="batchImport()"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>导入全部</button>
+      <button class="btn" onclick="document.getElementById('fileInput2').click()"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>选择文件</button>
       <input type="file" id="fileInput2" accept=".json,.txt" style="display:none" onchange="handleFileImport(event)">
     </div>
     <div id="batchResult" style="margin-top:8px"></div>
@@ -554,14 +695,14 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div id="tab-settings" class="tab-panel" style="display:none">
-<h2>⚙️ 设置</h2>
+<h2><svg class="ic-title" aria-hidden="true"><use href="#i-gear"/></svg>设置</h2>
 
 <div class="section">
-  <div class="section-title">🔑 API 密钥管理</div>
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-key"/></svg>API 密钥管理</div>
   <div class="section-body">
     <p style="color:var(--text2);margin-bottom:12px">生成的密钥可用于客户端访问代理 API（作为 x-api-key 或 Authorization 头）。</p>
     <div class="form-actions" style="margin-bottom:12px">
-      <button class="btn btn-success" onclick="generateKey()">➕ 生成新密钥</button>
+      <button class="btn btn-success" onclick="generateKey()"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>生成新密钥</button>
     </div>
     <div id="keysList"></div>
     <div id="keyGenResult" style="margin-top:8px"></div>
@@ -569,14 +710,14 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div class="section">
-  <div class="section-title">🧠 手工添加模型</div>
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-chip"/></svg>手工添加模型</div>
   <div class="section-body">
     <div class="form-row">
       <div class="field">
         <label>自定义模型 ID</label>
         <input type="text" id="customModelId" maxlength="200" placeholder="openai/gpt-4.1-nano">
       </div>
-      <button class="btn btn-primary" onclick="addCustomModel()">➕ 添加模型</button>
+      <button class="btn btn-primary" onclick="addCustomModel()"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>添加模型</button>
     </div>
     <p style="color:var(--text2);margin-bottom:10px">
       默认模型始终保留；自定义模型会出现在 <span class="mono">/v1/models</span> 中。
@@ -587,7 +728,7 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div class="section">
-  <div class="section-title">🔧 代理配置</div>
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-gear"/></svg>代理配置</div>
   <div class="section-body">
     <div class="form-row">
       <div class="field"><label>监听地址</label><input type="text" id="settingAddr" disabled></div>
@@ -611,7 +752,7 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div class="section">
-  <div class="section-title">📨 请求头配置（模拟 Cline CLI 发出）</div>
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-send"/></svg>请求头配置（模拟 Cline CLI 发出）</div>
   <div class="section-body">
     <table>
       <thead><tr><th style="width:220px">请求头</th><th>值</th><th style="width:40px"></th></tr></thead>
@@ -620,8 +761,8 @@ html.theme-anim,html.theme-anim *{
       </tbody>
     </table>
     <div class="form-actions" style="margin-top:12px">
-      <button class="btn btn-sm" onclick="addHeaderRow()">➕ 添加请求头</button>
-      <button class="btn btn-sm btn-primary" onclick="saveHeaders()">💾 保存请求头</button>
+      <button class="btn btn-sm" onclick="addHeaderRow()"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>添加请求头</button>
+      <button class="btn btn-sm btn-primary" onclick="saveHeaders()"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg>保存请求头</button>
     </div>
     <div style="font-size:12px;color:var(--text2);margin-top:8px">这些请求头会附加到所有转发给 Cline API 的请求中，以模拟官方客户端行为。</div>
     <div id="headerSaveResult" style="margin-top:8px"></div>
@@ -629,11 +770,11 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div class="section">
-  <div class="section-title">🗑️ 危险操作</div>
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-alert"/></svg>危险操作</div>
   <div class="section-body">
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-danger" onclick="deleteAllAccounts()">🗑️ 删除全部账号</button>
-      <button class="btn btn-danger" onclick="deleteAllKeys()">🗑️ 删除全部密钥</button>
+      <button class="btn btn-danger" onclick="deleteAllAccounts()"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>删除全部账号</button>
+      <button class="btn btn-danger" onclick="deleteAllKeys()"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>删除全部密钥</button>
     </div>
   </div>
 </div>
@@ -741,8 +882,8 @@ async function loadAccounts() {
         '<td class="mono" style="font-size:11px">' + lu + '</td>' +
         '<td class="mono" style="font-size:11px">' + cr + '</td>' +
         '<td style="white-space:nowrap">' +
-          '<button class="btn btn-sm" onclick="resetAccount(\'' + a.accountId + '\')" title="重置">↻</button> ' +
-          '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + a.accountId + '\')" title="删除">✕</button>' +
+          '<button class="btn btn-sm" onclick="resetAccount(\'' + a.accountId + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
+          '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + a.accountId + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
         '</td></tr>';
     }).join('');
   } catch (e) { toast('加载账号失败: ' + e.message, 'error'); }
@@ -788,7 +929,7 @@ async function resetAccount(id) {
 }
 
 async function deleteAllAccounts() {
-  if (!confirm('⚠️ 确定删除所有账号？不可撤销！')) return;
+  if (!confirm('确定删除所有账号？此操作不可撤销！')) return;
   try {
     await api('POST', '/accounts/delete-all', {});
     toast('全部账号已删除', 'success');
@@ -826,10 +967,10 @@ async function startOAuth() {
         if (r.data.done) {
           clearInterval(poll);
           btn.disabled = false;
-          btn.innerHTML = '🚀 开始 OAuth 登录';
+          btn.innerHTML = "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-rocket\"/></svg>开始 OAuth 登录";
           if (r.data.success) {
             _('oauthProgress').style.display = 'none';
-            _('oauthResult').innerHTML = '<div style="color:var(--green);font-weight:500">✓ 账号添加成功: ' + esc(r.data.email) + '</div>';
+            _('oauthResult').innerHTML = '<div style="color:var(--green);font-weight:500"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> 账号添加成功: ' + esc(r.data.email) + '</div>';
             _('oauthResult').style.display = 'block';
             loadAccounts(); loadStats();
             toast('账号添加成功！', 'success');
@@ -842,7 +983,7 @@ async function startOAuth() {
     }, 2000);
   } catch (e) {
     btn.disabled = false;
-    btn.innerHTML = '🚀 开始 OAuth 登录';
+    btn.innerHTML = "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-rocket\"/></svg>开始 OAuth 登录";
     _('oauthStatus').textContent = '错误: ' + e.message;
     toast('OAuth 失败: ' + e.message, 'error');
   }
@@ -899,13 +1040,13 @@ async function loadKeys() {
     const keys = d.data.keys;
     const el = _('keysList');
     if (!keys || keys.length === 0) {
-      el.innerHTML = '<div class="empty-state"><span class="icon">🔑</span>暂无 API 密钥</div>';
+      el.innerHTML = '<div class="empty-state"><span class="icon"><svg class="ic-empty" aria-hidden="true"><use href="#i-key"/></svg></span>暂无 API 密钥</div>';
       return;
     }
     el.innerHTML = keys.map(k =>
       '<div class="flex" style="margin-bottom:8px">' +
         '<span class="key-display" style="flex:1" onclick="copyText(\'' + k + '\')" title="点击复制">' + esc(k) + '</span>' +
-        '<button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + k + '\')">✕</button>' +
+      '<button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + k + '\')"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
       '</div>'
     ).join('');
   } catch (e) { _('keysList').innerHTML = '<div class="empty">加载失败</div>'; }
@@ -917,7 +1058,7 @@ async function generateKey() {
     const key = d.data.key;
     _('keyGenResult').innerHTML =
       '<div style="background:var(--bg);border:1px solid var(--green);border-radius:6px;padding:12px">' +
-        '<div style="color:var(--green);font-weight:500;margin-bottom:8px">✓ 新密钥已生成（点击复制）</div>' +
+        '<div style="color:var(--green);font-weight:500;margin-bottom:8px"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> 新密钥已生成（点击复制）</div>' +
         '<div class="key-display" onclick="copyText(\'' + key + '\')">' + esc(key) + '</div>' +
       '</div>';
     loadKeys();
@@ -984,7 +1125,7 @@ function addHeaderRow() {
   tr.innerHTML =
     '<td><input type="text" class="header-key" placeholder="Header-Name" style="font-size:12px;font-family:monospace"></td>' +
     '<td><input type="text" class="header-val" placeholder="value" style="font-size:12px;font-family:monospace"></td>' +
-    '<td><button class="btn btn-sm btn-danger" onclick="this.closest(\'tr\').remove()">✕</button></td>';
+        '<td><button class="btn btn-sm btn-danger" onclick="this.closest(\'tr\').remove()"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></td>';
   tbody.appendChild(tr);
 }
 
@@ -1008,7 +1149,7 @@ async function saveHeaders() {
     const d = await api('POST', '/config/update', { headers });
     toast('请求头已保存', 'success');
     _('headerSaveResult').innerHTML =
-      '<div style="color:var(--green);font-size:12px">✓ 已保存 ' + Object.keys(d.data.headers).length + ' 个请求头</div>';
+      '<div style="color:var(--green);font-size:12px"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> 已保存 ' + Object.keys(d.data.headers).length + ' 个请求头</div>';
     setTimeout(() => _('headerSaveResult').innerHTML = '', 5000);
     loadConfig();
   } catch (e) { toast('保存失败: ' + e.message, 'error'); }
@@ -1129,7 +1270,7 @@ async function loadRecommended(force) {
     if (force) toast('刷新失败: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
-    btn.textContent = '🔄 刷新数据';
+    btn.innerHTML = "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-refresh\"/></svg>刷新数据";
   }
 }
 
@@ -1182,7 +1323,7 @@ function renderRecommended() {
         '<button class="btn btn-sm' + (pending ? ' btn-success' : '') + '"' +
           (pending ? '' : ' disabled') +
           ' onclick="addGroup(\'' + g.key + '\')">' +
-          (pending ? '➕ 全部添加 (' + pending + ')' : '✓ 已全部添加') + '</button>' +
+          (pending ? "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-plus\"/></svg>全部添加 (" + pending + ')' : "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-check\"/></svg>已全部添加") + '</button>' +
       '</div>' +
       '<div class="mcards">' + cards + '</div>' +
     '</div>';
@@ -1294,7 +1435,7 @@ async function loadConfig() {
         '<tr>' +
           '<td><input type="text" class="header-key" value="' + esc(k) + '" style="font-size:12px;font-family:monospace;width:100%"></td>' +
           '<td><input type="text" class="header-val" value="' + esc(v) + '" style="font-size:12px;font-family:monospace;width:100%"></td>' +
-          '<td><button class="btn btn-sm btn-danger" onclick="this.closest(\'tr\').remove()">✕</button></td>' +
+          '<td><button class="btn btn-sm btn-danger" onclick="this.closest(\'tr\').remove()"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></td>' +
         '</tr>'
       ).join('');
     }
@@ -1339,7 +1480,7 @@ setInterval(() => { loadStats(); }, 10000);
     if (theme === 'dark') root.setAttribute('data-theme', 'dark');
     else root.removeAttribute('data-theme');
     if (label) label.textContent = theme === 'dark' ? '浅色' : '深色';
-    if (icon) icon.textContent = theme === 'dark' ? '☀' : '☾';
+    if (icon) icon.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-' + (theme === 'dark' ? 'sun' : 'moon') + '"/></svg>';
   }
 
   paint(preferred(), false);
