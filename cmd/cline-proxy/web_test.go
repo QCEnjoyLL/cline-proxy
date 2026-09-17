@@ -77,3 +77,61 @@ func TestThemeToggleIconsAreDefined(t *testing.T) {
 		}
 	}
 }
+
+var (
+	// onclick="..." 属性整体：从属性开始到它的闭合引号为止。
+	// 属性值里只可能出现 \' 这种转义单引号，不会出现裸 "，所以 [^"]* 正好截到属性末尾。
+	onclickAttrRe = regexp.MustCompile(`onclick="([^"]*)"`)
+	// esc( 作为独立函数调用。不能用 strings.Contains：toggleModelDesc() 里也含
+	// "esc(" 子串，会误报。
+	escCallRe = regexp.MustCompile(`\besc\(`)
+	// jsStr( 作为独立函数调用。
+	jsStrCallRe = regexp.MustCompile(`\bjsStr\(`)
+)
+
+// onclick 里的值内插必须走 jsStr，不能走 esc。
+//
+// 背景：esc() 是基于 textContent 的 HTML 转义，只处理 & < >，**不处理引号和反斜杠**。
+// 而 onclick="fn('...')" 是「HTML 属性里再嵌 JS 字符串」的双层上下文：
+// ' 能结束 JS 字面量、\ 能吃掉转义、" 能提前闭合属性。曾有多处直接用 esc()，
+// 一个含引号的模型 ID / API Key 即可注入 JS。
+//
+// 判据必须落在「属性内部」而不是「整行」：同一行里 jsStr（拼 onclick）与 esc
+// （渲染旁边的纯文本节点）并存是正常的，按整行判断会漏掉
+// `onclick="... jsStr(a) ... esc(b) ..."` 这种真回归——这一点是先用突变测试
+// 把 jsStr(c.modelId) 改回 esc(c.modelId) 验证出来的。
+func TestOnclickInterpolationDoesNotUseEsc(t *testing.T) {
+	dynamic := 0
+	for _, line := range strings.Split(adminHTML, "\n") {
+		for _, m := range onclickAttrRe.FindAllStringSubmatch(line, -1) {
+			region := m[1]
+			// 静态处理器（如 toggleModelDesc()）没有内插，不存在转义问题。
+			if !strings.Contains(region, "' +") {
+				continue
+			}
+			dynamic++
+			if escCallRe.MatchString(region) {
+				t.Errorf("onclick 里的 JS 字符串内插用了 esc（只转 HTML，不挡引号），应改用 jsStr：\n  %s",
+					strings.TrimSpace(line))
+				continue
+			}
+			if !jsStrCallRe.MatchString(region) {
+				t.Errorf("onclick 里的动态内插没有走 jsStr（缺少转义）：\n  %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	// 若正则失效（比如页面改成别的事件属性写法），这条测试会静默失去意义。
+	if dynamic == 0 {
+		t.Fatal("没有匹配到任何 onclick 里的动态内插——正则或页面结构已变，本测试失去意义")
+	}
+}
+
+// jsStr / attr 必须定义存在：上面那条测试会把 onclick 改成 jsStr，若函数名拼错
+// 或整个被删掉，页面会在运行时报 ReferenceError，而静态 HTML 测试发现不了。
+func TestPageDefinesEscapeHelpers(t *testing.T) {
+	for _, fn := range []string{"const esc ", "const attr ", "const jsStr "} {
+		if !strings.Contains(adminHTML, fn) {
+			t.Errorf("admin.html 缺少转义辅助函数定义：%q", strings.TrimSpace(fn))
+		}
+	}
+}

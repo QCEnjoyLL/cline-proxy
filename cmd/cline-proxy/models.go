@@ -10,6 +10,13 @@ import (
 
 const maxModelIDLength = 200
 
+// modelIDForbiddenRunes 是 model ID 里一律禁止的字符。
+//
+// 选取原则：只禁掉“不可能出现在任何模型标识里、但会破坏下游字符串语法”的字符，
+// 避免收得过紧误伤真实模型名——像 openai/gpt-4.1-nano、cline-pass/qwen3.7-max
+// 这类含 / . - 的 ID 必须照常可用。
+const modelIDForbiddenRunes = "|'\"`\\<>"
+
 var (
 	errModelExists   = errors.New("model already exists")
 	errModelNotFound = errors.New("model not found")
@@ -74,8 +81,15 @@ func modelExistsLocked(p *AccountPool, id string) bool {
 		return true
 	}
 	for _, customID := range p.CustomModels {
+		// 归一化只用于「新增」时把关。这里面对的是**已经存下来的**历史数据：
+		// 1.3.4 之前允许含 | 引号 等字符的 ID 直接入库，它们如今过不了
+		// normalizeModelID。此时必须退回原始字符串比较，否则这些旧 ID 会
+		// 变得「列得出来、却删不掉、也设不成默认模型」。
 		normalizedID, err := normalizeModelID(customID)
-		if err == nil && normalizedID == id {
+		if err != nil {
+			normalizedID = customID
+		}
+		if normalizedID == id {
 			return true
 		}
 	}
@@ -93,10 +107,9 @@ func getDefaultModel() string {
 }
 
 func setDefaultModel(id string) error {
-	id, err := normalizeModelID(id)
-	if err != nil {
-		return err
-	}
+	// 这里的目标 ID 必须是池子里**已存在**的模型，所以走 normalizeExistingModelID：
+	// 新增路径才需要字符集把关，收紧校验不该让历史 ID 永远当不上默认模型。
+	id = normalizeExistingModelID(id)
 
 	p := loadPool()
 	poolMu.Lock()
@@ -155,12 +168,38 @@ func normalizeModelID(id string) (string, error) {
 	if len(id) > maxModelIDLength {
 		return "", fmt.Errorf("model ID must not exceed %d bytes", maxModelIDLength)
 	}
+	// model ID 会被拼进两处“有语法的字符串”，因此不能放任任意字符：
+	//
+	//  1. 管理面板把它内插进 HTML 属性里的 onclick（clearCooldown('...')），
+	//     引号能提前闭合属性、反斜杠能吃掉转移符——即注入 JS。
+	//  2. 冷却键是 accountID + "|" + modelID（见 cooldown.go），含 "|" 会让
+	//     splitCooldownKey 切错位置，该条冷却从此不在面板上显示。
+	//
+	// 已有的 esc() 只做 HTML 转义（&<>），挡不住上面两种；所以在这一层
+	// 直接禁掉这些字符，作为唯一的把关点。
 	for _, r := range id {
 		if unicode.IsSpace(r) || unicode.IsControl(r) {
 			return "", errors.New("model ID cannot contain whitespace or control characters")
 		}
+		if strings.ContainsRune(modelIDForbiddenRunes, r) {
+			return "", fmt.Errorf("model ID cannot contain any of %s", modelIDForbiddenRunes)
+		}
 	}
 	return id, nil
+}
+
+// normalizeExistingModelID 用于**已经在池子里**的 ID（设置默认模型、删除等），
+// 与新增路径的 normalizeModelID 分开：
+//
+// 新数据必须过字符集校验（否则会带进注入/冷却键问题）；但历史数据是既成事实，
+// 校验收紧不该把它变成「删不掉的孤儿」——1.3.4 之前允许含 | 引号 的 ID 入库。
+// 那些 ID 只做长度/空白这类「不会因版本变化而失效」的清理，校验失败即原样返回。
+func normalizeExistingModelID(id string) string {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return id
+	}
+	return trimmed
 }
 
 func addCustomModel(id string) (string, error) {
@@ -208,10 +247,9 @@ func addCustomModel(id string) (string, error) {
 }
 
 func deleteCustomModel(id string) error {
-	id, err := normalizeModelID(id)
-	if err != nil {
-		return err
-	}
+	// 同 setDefaultModel：删除是清理历史数据的唯一出口，绝不能被收紧后的
+	// 字符集校验挡在门外，否则旧 ID 会永久占位、删不掉。
+	id = normalizeExistingModelID(id)
 
 	p := loadPool()
 	poolMu.Lock()
@@ -242,8 +280,13 @@ func deleteCustomModel(id string) error {
 	filtered := make([]string, 0, len(p.CustomModels))
 	found := false
 	for _, customID := range p.CustomModels {
+		// 同 modelExistsLocked：历史 ID 可能过不了校验，这时按原样比较，
+		// 保证旧数据依然可以被删除（deleteCustomModel 是清理它们的唯一出口）。
 		normalizedID, normalizeErr := normalizeModelID(customID)
-		if normalizeErr == nil && normalizedID == id {
+		if normalizeErr != nil {
+			normalizedID = customID
+		}
+		if normalizedID == id {
 			found = true
 			continue
 		}

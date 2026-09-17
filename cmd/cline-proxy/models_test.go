@@ -73,6 +73,45 @@ func TestCustomModelRejectsDuplicatesAndInvalidIDs(t *testing.T) {
 	}
 }
 
+// model ID 会进入两处“有语法的字符串”：面板 onclick 里的 JS 字面量，以及
+// 「accountID|modelID」形式的冷却键。这里锁住字符集把关点。
+//
+// 背景：这两个位置曾被引号 / 竖线打穿——esc() 只做 HTML 转义不挡 JS 注入，
+// 而含 "|" 的 ID 会让 splitCooldownKey 切错，冷却条目在面板上整条消失。
+func TestNormalizeModelIDRejectsSyntaxBreakingRunes(t *testing.T) {
+	for _, bad := range []string{
+		// 闭合 onclick="..." 属性
+		`openai/a"b`,
+		// 逃出 JS 字符串字面量
+		`openai/a'b`,
+		// 反斜杠吃掉转移符
+		`openai/a\b`,
+		// 冷却键分隔符
+		"openai/a|b",
+		// 提前结束 <script> 上下文
+		"openai/a<b",
+		// 反引号（模板字面量）
+		"openai/a`b",
+	} {
+		if _, err := normalizeModelID(bad); err == nil {
+			t.Errorf("normalizeModelID(%q) unexpectedly succeeded", bad)
+		}
+	}
+
+	// 真实模型名不能被误伤：斜杠、点、连字符、冒号都必须照常可用。
+	for _, good := range []string{
+		"openai/gpt-4.1-nano",
+		"cline-pass/qwen3.7-max",
+		"deepseek/deepseek-v4-pro",
+		"google/gemini-2.5-flash",
+		"provider:model/v1",
+	} {
+		if got, err := normalizeModelID(good); err != nil || got != good {
+			t.Errorf("normalizeModelID(%q) = %q, %v; want unchanged", good, got, err)
+		}
+	}
+}
+
 func TestDeletePresetModelsAllowedAndRestorable(t *testing.T) {
 	useTemporaryPool(t)
 
@@ -319,5 +358,56 @@ func TestAdminDefaultModelConfig(t *testing.T) {
 	handleAdminUpdateConfig(invalidResponse, httptest.NewRequest(http.MethodPost, "/admin/api/config/update", strings.NewReader(`{"defaultModel":"missing/model"}`)))
 	if invalidResponse.Code != http.StatusBadRequest || getDefaultModel() != "provider/custom-model" {
 		t.Fatalf("invalid config status=%d default=%q", invalidResponse.Code, getDefaultModel())
+	}
+}
+
+// 收紧字符集不得让历史数据变成「删不掉的孤儿」。
+//
+// 1.3.4 之前 addCustomModel 不检查 | 引号 等字符，这类 ID 可能已经躺在
+// .cline-accounts.json 里。校验收紧后它们过不了 normalizeModelID，若
+// modelExistsLocked / deleteCustomModel 只认归一化后的结果，就会：
+//   - 列表里看得见，却设不成默认模型（modelExistsLocked 认为它不存在）；
+//   - 也删不掉（deleteCustomModel 报 errModelNotFound），永久占位。
+//
+// 这两处面对历史数据时必须退回原始字符串比较。
+func TestLegacyModelIDsStayListedAndDeletable(t *testing.T) {
+	useTemporaryPool(t)
+
+	// 模拟旧版本写进池里的、如今过不了校验的 ID。
+	const legacy = `vendor/legacy|x"y`
+	if _, err := normalizeModelID(legacy); err == nil {
+		t.Fatalf("前提不成立：normalizeModelID 仍接受 %q，本测试无意义", legacy)
+	}
+
+	p := loadPool()
+	poolMu.Lock()
+	p.CustomModels = append(p.CustomModels, legacy)
+	poolMu.Unlock()
+	if err := savePool(); err != nil {
+		t.Fatalf("persist legacy model: %v", err)
+	}
+
+	// 1) 仍被认定为存在（否则无法设为默认模型）。
+	p = loadPool()
+	poolMu.Lock()
+	exists := modelExistsLocked(p, legacy)
+	poolMu.Unlock()
+	if !exists {
+		t.Error("历史 ID 应仍被视为存在，否则设不成默认模型")
+	}
+
+	// 2) 仍可设置成默认模型。
+	if err := setDefaultModel(legacy); err != nil {
+		t.Errorf("历史 ID 应仍可设为默认模型：%v", err)
+	}
+
+	// 3) 仍可删除——这是清理旧数据的唯一出口。
+	if err := deleteCustomModel(legacy); err != nil {
+		t.Fatalf("历史 ID 应仍可删除，否则会永久占位：%v", err)
+	}
+	for _, m := range allModels() {
+		if m.ID == legacy {
+			t.Errorf("删除后历史 ID 仍出现在模型列表：%+v", m)
+		}
 	}
 }

@@ -885,7 +885,29 @@ html.theme-anim,html.theme-anim *{
 const API = '/admin/api';
 
 const _ = id => document.getElementById(id);
+// esc 用于纯文本节点/普通 HTML 内容：只转义 & < >，够用且浏览器自动补全引号。
 const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+
+// attr 用于把值放进 HTML 属性（title="..." 等）。esc 在这里不够：它不转义引号，
+// 值里一个 " 就能提前闭合属性、逃到属性外面去。
+const attr = s => esc(s).replace(/"/g, '&quot;');
+
+// jsStr 用于把值内插进 onclick 里的 JS 字符串字面量（fn('...')）。
+//
+// 这是「HTML 属性里再嵌 JS 字符串」的双层上下文，两种转义都不能少：
+//   - \ 与 ' ：JS 层的转义，否则值能提前结束字面量并注入代码；顺序不能反，
+//     先处理反斜杠，否则会把刚补上的转义符再转义一遍；
+//   - " ：HTML 层的转义，否则值能提前闭合 onclick="..." 属性逃到属性外面；
+//   - \r\n 等换行：JS 字符串字面量不允许裸换行，必须转成 \n / \r 转义序列。
+//
+// esc 挡不住前两类——JS 只看得到反转义后的字符，HTML 实体帮不上忙。
+const jsStr = s => String(s ?? '')
+  .replace(/\\/g, '\\\\')
+  .replace(/'/g, "\\'")
+  .replace(/\r/g, '\\r')
+  .replace(/\n/g, '\\n')
+  .replace(/"/g, '&quot;')
+  .replace(/</g, '&lt;');
 
 function toast(msg, t) {
   const el = _('toast');
@@ -978,8 +1000,8 @@ async function loadAccounts() {
         : '<span class="status ' + a.status + '"><span class="status-dot ' + a.status + '"></span>' + (sn[a.status] || a.status) + '</span>';
       // 操作按钮：禁用态显示「启用」，正常态显示「禁用」
       const toggle = dis
-        ? '<button class="btn btn-sm btn-success" onclick="setAccountEnabled(\'' + a.accountId + '\')" title="启用（参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></button> '
-        : '<button class="btn btn-sm" onclick="setAccountDisabledClick(\'' + a.accountId + '\')" title="禁用（不参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg></button> ';
+        ? '<button class="btn btn-sm btn-success" onclick="setAccountEnabled(\'' + jsStr(a.accountId) + '\')" title="启用（参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></button> '
+        : '<button class="btn btn-sm" onclick="setAccountDisabledClick(\'' + jsStr(a.accountId) + '\')" title="禁用（不参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg></button> ';
       return '<tr' + (dis ? ' style="opacity:.55"' : '') + '>' +
         '<td>' + esc(a.email) + '</td>' +
         '<td>' + badge + '</td>' +
@@ -989,9 +1011,9 @@ async function loadAccounts() {
         '<td class="mono" style="font-size:11px">' + cr + '</td>' +
         '<td style="white-space:nowrap">' +
           toggle +
-          '<button class="btn btn-sm" onclick="showAccountDetail(\'' + a.accountId + '\')" title="账号详情（按模型查看额度与重置时间）"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button> ' +
-          '<button class="btn btn-sm" onclick="resetAccount(\'' + a.accountId + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
-          '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + a.accountId + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
+          '<button class="btn btn-sm" onclick="showAccountDetail(\'' + jsStr(a.accountId) + '\')" title="账号详情（按模型查看额度与重置时间）"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button> ' +
+          '<button class="btn btn-sm" onclick="resetAccount(\'' + jsStr(a.accountId) + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
+          '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + jsStr(a.accountId) + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
         '</td></tr>';
     }).join('');
   } catch (e) { toast('加载账号失败: ' + e.message, 'error'); }
@@ -1016,7 +1038,7 @@ async function loadCooldowns() {
         '<td class="mono" style="font-size:11px">' + esc(c.modelId) + '</td>' +
         '<td>' + limitBadge(c) + '</td>' +
         '<td>' + formatRemaining(c.remainingSec) + '</td>' +
-        '<td class="mono" style="font-size:11px" title="' + esc(untilTitle(c)) + '">' +
+        '<td class="mono" style="font-size:11px" title="' + attr(untilTitle(c)) + '">' +
           new Date(c.until).toLocaleString('zh-CN') + '</td>' +
       '</tr>';
     }).join('');
@@ -1032,7 +1054,7 @@ function limitBadge(c) {
       '<span class="status-dot cooldown"></span>限流</span>';
   }
   const label = limitKindLabel(c.kind);
-  return '<span class="status cooldown" title="' + esc(limitKindTitle(c.kind)) + '">' +
+  return '<span class="status cooldown" title="' + attr(limitKindTitle(c.kind)) + '">' +
     '<span class="status-dot cooldown"></span>' + esc(label) + '</span>';
 }
 
@@ -1125,7 +1147,7 @@ function renderAccountDetail(a) {
           (c.resetsAt ? esc(fmtDateTime(c.resetsAt)) : '<span style="color:var(--text2)">上游未说明</span>') +
         '</td>' +
         '<td><button class="btn btn-sm" title="立即解除冷却，让请求重新参与轮询" ' +
-          'onclick="clearCooldown(\'' + esc(c.accountId) + '\',\'' + esc(c.modelId) + '\')">' +
+          'onclick="clearCooldown(\'' + jsStr(c.accountId) + '\',\'' + jsStr(c.modelId) + '\')">' +
           '<svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>解除</button></td>' +
       '</tr>'
     ).join('');
@@ -1341,8 +1363,8 @@ async function loadKeys() {
     }
     el.innerHTML = keys.map(k =>
       '<div class="flex" style="margin-bottom:8px">' +
-        '<span class="key-display" style="flex:1" onclick="copyText(\'' + k + '\')" title="点击复制">' + esc(k) + '</span>' +
-      '<button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + k + '\')"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
+        '<span class="key-display" style="flex:1" onclick="copyText(\'' + jsStr(k) + '\')" title="点击复制">' + esc(k) + '</span>' +
+      '<button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + jsStr(k) + '\')"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
       '</div>'
     ).join('');
   } catch (e) { _('keysList').innerHTML = '<div class="empty">加载失败</div>'; }
@@ -1355,7 +1377,7 @@ async function generateKey() {
     _('keyGenResult').innerHTML =
       '<div style="background:var(--bg);border:1px solid var(--green);border-radius:6px;padding:12px">' +
         '<div style="color:var(--green);font-weight:500;margin-bottom:8px"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> 新密钥已生成（点击复制）</div>' +
-        '<div class="key-display" onclick="copyText(\'' + key + '\')">' + esc(key) + '</div>' +
+        '<div class="key-display" onclick="copyText(\'' + jsStr(key) + '\')">' + esc(key) + '</div>' +
       '</div>';
     loadKeys();
     toast('密钥已生成', 'success');
@@ -1616,8 +1638,8 @@ function renderRecommended() {
       const name = m.name || m.id;
       const tip = [name, m.id, m.description, '', has ? '已启用 · 点击复制 ID' : '点击添加'].filter(Boolean).join('\n');
       return '<div class="mcard' + (has ? ' installed' : '') + '" role="button" tabindex="0"' +
-        ' data-id="' + esc(m.id) + '" data-installed="' + (has ? '1' : '0') + '"' +
-        ' title="' + esc(tip) + '">' +
+        ' data-id="' + attr(m.id) + '" data-installed="' + (has ? '1' : '0') + '"' +
+        ' title="' + attr(tip) + '">' +
         '<div class="mrow">' +
           '<span class="mname">' + esc(name) + '</span>' +
           (m.id && m.id !== name ? '<span class="mid">' + esc(m.id) + '</span>' : '') +
@@ -1629,7 +1651,7 @@ function renderRecommended() {
       '</div>';
     }).join('');
 
-    return '<div class="mgroup" data-key="' + esc(g.key) + '">' +
+    return '<div class="mgroup" data-key="' + attr(g.key) + '">' +
       '<div class="mgroup-head">' +
         '<span class="dot" style="background:' + meta.color + '"></span>' +
         '<h3>' + esc(meta.title) + '</h3>' +
@@ -1638,7 +1660,7 @@ function renderRecommended() {
           (pending ? ' · 待添加 ' + pending : ' · 已全部添加') + '</span>' +
         '<button class="btn btn-sm' + (pending ? ' btn-success' : '') + '"' +
           (pending ? '' : ' disabled') +
-          ' onclick="addGroup(\'' + g.key + '\')">' +
+          ' onclick="addGroup(\'' + jsStr(g.key) + '\')">' +
           (pending ? "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-plus\"/></svg>全部添加 (" + pending + ')' : "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-check\"/></svg>已全部添加") + '</button>' +
       '</div>' +
       '<div class="mcards">' + cards + '</div>' +
@@ -1750,8 +1772,8 @@ async function loadConfig() {
       const tbody = _('headersTableBody');
       tbody.innerHTML = Object.entries(c.headers).map(([k, v]) =>
         '<tr>' +
-          '<td><input type="text" class="header-key" value="' + esc(k) + '" style="font-size:12px;font-family:monospace;width:100%"></td>' +
-          '<td><input type="text" class="header-val" value="' + esc(v) + '" style="font-size:12px;font-family:monospace;width:100%"></td>' +
+          '<td><input type="text" class="header-key" value="' + attr(k) + '" style="font-size:12px;font-family:monospace;width:100%"></td>' +
+          '<td><input type="text" class="header-val" value="' + attr(v) + '" style="font-size:12px;font-family:monospace;width:100%"></td>' +
           '<td><button class="btn btn-sm btn-danger" onclick="this.closest(\'tr\').remove()"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></td>' +
         '</tr>'
       ).join('');

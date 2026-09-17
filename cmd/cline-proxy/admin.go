@@ -58,6 +58,29 @@ func randomPassword(n int) string {
 	return hex.EncodeToString(b)
 }
 
+// newAPIKey 生成代理侧 API Key。
+//
+// 必须是 crypto/rand：代理 Key 是暴露在公网上的唯一凭据，一旦可预测就等于没有
+// 鉴权。旧实现用 UnixMilli + UnixNano%1e6 拼出来，熵只有约 20 bit 且完全由时间
+// 决定，攻击者按已知的生成时刻枚举即可伪造。
+//
+// 与随机密码不同的是，这里不静默退化成基于时间的值——生成不出安全 Key 就该让
+// 调用方报错，而不是发出一个看似正常、实则可预测的密钥。
+func newAPIKey() (string, error) {
+	b := make([]byte, apiKeyRandomBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return apiKeyPrefix + hex.EncodeToString(b), nil
+}
+
+const (
+	// apiKeyPrefix 便于在配置里一眼认出这是本代理发出的 Key。
+	apiKeyPrefix = "cline_"
+	// 24 字节 = 192 bit 熵，hex 后 48 字符，长度也不易被误截断。
+	apiKeyRandomBytes = 24
+)
+
 func newAdminSession() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -957,7 +980,11 @@ func handleAdminGenerateKey(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
 	}
-	key := fmt.Sprintf("cline_%x_%x", time.Now().UnixMilli(), time.Now().UnixNano()%1000000)
+	key, err := newAPIKey()
+	if err != nil {
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "failed to generate key"})
+		return
+	}
 	p := loadPool()
 	poolMu.Lock()
 	p.Keys = append(p.Keys, key)

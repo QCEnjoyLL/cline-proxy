@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,11 @@ const (
 	defaultModel          = "cline-free/glm-5.2"
 	defaultMaxTokens      = 128000
 	defaultReasoningEffort = "high"
+	// maxPendingToolCalls 是单个流里同时跟踪的工具调用数上限。
+	// pendingTools 按上游给的下标索引，下标不受我们控制；没有上限的话，
+	// 一个恶意/异常的上游可以用递增下标把 map 撑到内存耗尽（模型单次
+	// 响应里常见工具数是几十个量级，300 足够宽松）。
+	maxPendingToolCalls = 300
 )
 
 var passThroughKeys = []string{
@@ -41,6 +47,11 @@ type chatRequest struct {
 }
 
 func startProxy(port int) error {
+	// 在启动时就确定后台凭据。loadAdminCredentials 是 sync.Once 且只在登录
+	// handler 里被调用，导致 ADMIN_PASSWORD 留空时随机密码要等到**第一次有人
+	// 尝试登录**才打印——而 README 让用户用 `docker compose logs | grep
+	// ADMIN_PASSWORD` 找密码，那时日志里还什么都没有，等于把人锁在门外。
+	loadAdminCredentials()
 	p := loadPool()
 	activeCount := 0
 	for _, a := range p.Accounts {
@@ -101,15 +112,7 @@ func startProxy(port int) error {
 				}
 			}
 
-			valid := false
-			for _, k := range keys {
-				if k == key {
-					valid = true
-					break
-				}
-			}
-
-			if !valid {
+			if !validAPIKey(keys, key) {
 				writeJSON(w, http.StatusUnauthorized, map[string]any{
 					"error": map[string]string{
 						"message": "invalid API key. Generate one at /admin/ or set x-api-key header",
@@ -268,6 +271,24 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+// validAPIKey 判断请求带来的 key 是否命中配置里的任意一个。
+//
+// 恒定时间比较：普通 == 会在第一个不同字节处提前返回，攻击者能靠响应耗时
+// 逐字节试出正确的 Key。这里刻意不提前 break——一旦命中就退出，命中位置同样
+// 会体现在耗时上。
+//
+// 注意 subtle.ConstantTimeCompare 在两侧长度不同时立即返回 0，长度差异本身
+// 无法隐藏——但长度不构成可用于逐步逼近的旁路，所以无需额外处理。
+func validAPIKey(configured []string, provided string) bool {
+	valid := false
+	for _, k := range configured {
+		if subtle.ConstantTimeCompare([]byte(k), []byte(provided)) == 1 {
+			valid = true
+		}
+	}
+	return valid
 }
 
 func cleanMessages(messages []any) []any {
@@ -600,7 +621,18 @@ type toolAccumulator struct {
 	id      string
 	name    string
 	args    string
+	// started 表示 content_block_start 已发出；emitted 表示整块（含 stop）已完成。
+	// 两者分开：参数可能是分帧到达的，必须先把块打开、边收边发 delta。
+	started bool
 	emitted bool
+
+	// blockIndex 是本工具块在 Anthropic 内容数组里的下标，与 OpenAI 的
+	// tool_calls[].index 是两套编号：正文若先占了 0，工具块必须从 1 开始。
+	blockIndex int
+
+	// lastDeltaLen 记录上一次已经作为 input_json_delta 发出去的字节数，
+	// 用于只发增量部分。按字节比较前缀是安全的：JSON 参数总是逐段追加的。
+	lastDeltaLen int
 }
 
 type anthropicReq struct {
@@ -985,7 +1017,6 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 		"type": "message_start",
 		"message": map[string]any{
 			"id":          msgID,
-			"type":        "message",
 			"role":        "assistant",
 			"content":     []any{},
 			"model":       "",
@@ -996,28 +1027,68 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 	textIndex := new(int)
 	*textIndex = -1
 	hasText := false
+
+	// nextContentIndex 分配下一个 Anthropic 内容块下标。正文与工具块共用同一
+	// 编号空间：正文先占了 0，工具块就得从 1 开始，否则下标会撞车。
+	nextContentIndex := func() int {
+		i := *textIndex + 1
+		*textIndex = i
+		return i
+	}
 	pendingTools := map[int]*toolAccumulator{}
 
-	emitToolBlock := func(acc *toolAccumulator) {
-		acc.emitted = true
-		var argsObj any
-		json.Unmarshal([]byte(acc.args), &argsObj)
-		if argsObj == nil {
-			argsObj = map[string]any{}
+	// emitToolStart 打开工具块。input 必须是空对象——Anthropic 规定参数一律由
+	// 后续的 input_json_delta 事件累积而成。这里若直接塞进完整 args，官方 SDK
+	// 会忽略随后的 delta，而那些 delta 携带的正是真实参数。
+	emitToolStart := func(acc *toolAccumulator) {
+		if acc.started {
+			return
 		}
+		acc.started = true
 		emit("content_block_start", map[string]any{
 			"type":  "content_block_start",
-			"index": acc.index,
+			"index": acc.blockIndex,
 			"content_block": map[string]any{
 				"type":  "tool_use",
 				"id":    acc.id,
 				"name":  acc.name,
-				"input": argsObj,
+				"input": map[string]any{},
 			},
 		})
+	}
+
+	// emitToolBlock 结束工具块，并在此刻一次性发出参数。
+	//
+	// 为什么不在收到片段时边收边发：上游的 arguments 分帧不可靠——不少实现会
+	// 先发一个占位 "{}"，随后再发真正的完整 JSON。边收边发会把两者拼成
+	// "{}{\"city\":...}" 这种非法 JSON，客户端解析必然失败。
+	//
+	// 因此先把原始分片拼好、在这里一次性校验并发出。代价是参数不再“边收边
+	// 解析”，换来的是绝不产出非法 JSON——对工具调用来说后者是致命的，前者只是
+	// 延迟。文档化的字段顺序仍与官方一致（start → JSON 分片 → delta → stop）。
+	emitToolBlock := func(acc *toolAccumulator) {
+		if acc.emitted {
+			return
+		}
+		if !acc.started {
+			// 上游一个参数片段都没给：仍要让客户端看到一个完整可解析的空参数调用，
+			// 而不是一个从未打开的块。
+			emitToolStart(acc)
+		}
+		acc.emitted = true
+		for _, chunk := range toolInputChunks(acc.args) {
+			emit("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": acc.blockIndex,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": chunk,
+				},
+			})
+		}
 		emit("content_block_stop", map[string]any{
 			"type":  "content_block_stop",
-			"index": acc.index,
+			"index": acc.blockIndex,
 		})
 	}
 
@@ -1041,6 +1112,7 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 		if err := json.Unmarshal([]byte(payload), &obj); err != nil {
 			continue
 		}
+
 		if data, ok := obj["data"]; ok {
 			if d, ok := data.(map[string]any); ok {
 				obj = d
@@ -1093,7 +1165,7 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 			})
 		}
 
-		// Tool calls - accumulate and emit when complete
+		// 工具调用：边收边开块并发 input_json_delta，收尾统一放在流末尾。
 		if tcRaw, ok := delta["tool_calls"].([]any); ok {
 			for _, tc := range tcRaw {
 				tcMap, _ := tc.(map[string]any)
@@ -1104,9 +1176,19 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 				if i, ok := tcMap["index"].(float64); ok {
 					idx = int(i)
 				}
+				if len(pendingTools) >= maxPendingToolCalls {
+					if _, known := pendingTools[idx]; !known {
+						// 上游给了异常多的工具下标：放弃新建，避免无上限内存占用。
+						// 宁可少一个工具块，也不要在这里 OOM。
+						log.Printf("  anthropic stream: too many tool calls (>%d), dropping index %d",
+							maxPendingToolCalls, idx)
+						continue
+					}
+				}
 				acc, exists := pendingTools[idx]
 				if !exists {
 					acc = &toolAccumulator{index: idx}
+					acc.blockIndex = nextContentIndex()
 					pendingTools[idx] = acc
 				}
 				if id, ok := tcMap["id"].(string); ok && id != "" {
@@ -1116,12 +1198,15 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 					if name, ok := fn["name"].(string); ok && name != "" {
 						acc.name = name
 					}
-					if args, ok := fn["arguments"].(string); ok && args != "" {
-						acc.args += args
+					// 累积参数；如何处理占位 {} 见 appendToolArgs 的说明。
+					if args, ok := fn["arguments"].(string); ok {
+						acc.args = appendToolArgs(acc.args, args)
 					}
 				}
-				if acc.id != "" && acc.name != "" && acc.args != "" && !acc.emitted {
-					emitToolBlock(acc)
+				// id 与 name 齐备就先把块打开，让客户端尽早知道要调用哪个工具。
+				// 参数不在这里发：要等收尾时统一校验后一次性发出（见 emitToolBlock）。
+				if acc.id != "" && acc.name != "" {
+					emitToolStart(acc)
 				}
 			}
 		}
@@ -1145,11 +1230,24 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 		})
 	}
 
-	// Emit any remaining un-emitted tool blocks
+	// 把尚未收尾的工具块按内容下标顺序补齐。
+	//
+	// 必须排序：Go 的 map 遍历顺序是随机的，多工具调用时各块的 start/stop
+	// 会交错乱序，客户端按 index 重建内容数组就会错位。这里直接插入排序，
+	// 与 cooldown.go 的做法一致（条目很少，不值得引入 sort）。
+	remaining := make([]*toolAccumulator, 0, len(pendingTools))
 	for _, acc := range pendingTools {
 		if !acc.emitted {
-			emitToolBlock(acc)
+			remaining = append(remaining, acc)
 		}
+	}
+	for i := 1; i < len(remaining); i++ {
+		for j := i; j > 0 && remaining[j].blockIndex < remaining[j-1].blockIndex; j-- {
+			remaining[j], remaining[j-1] = remaining[j-1], remaining[j]
+		}
+	}
+	for _, acc := range remaining {
+		emitToolBlock(acc)
 	}
 
 	emit("message_delta", map[string]any{
@@ -1165,6 +1263,51 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 
 	emit("message_stop", map[string]any{"type": "message_stop"})
 	log.Printf("  anthropic stream done: hasText=%v tools=%d reason=%s", hasText, len(pendingTools), stopReason)
+}
+
+// appendToolArgs 把上游的 arguments 分片拼起来。
+//
+// 一个坑：部分 OpenAI 兼容实现的第一帧会发一个占位 "{}"，随后再发真正的完整
+// 参数。直接字符串拼接会得到 "{}{\"city\":...}" 这种非法 JSON，客户端解析
+// 必然失败。这里识别「已收内容是空对象占位、新分片又以 { 开头」的情况，用
+// 新分片替换掉占位。
+func appendToolArgs(acc, chunk string) string {
+	if acc == "" {
+		return chunk
+	}
+	if isPlaceholderToolArgs(acc) && strings.HasPrefix(strings.TrimSpace(chunk), "{") {
+		return chunk
+	}
+	return acc + chunk
+}
+
+// isPlaceholderToolArgs 判断已累积的内容是不是「空对象」占位。
+func isPlaceholderToolArgs(s string) bool {
+	t := strings.TrimSpace(s)
+	return t == "" || t == "{}"
+}
+
+// toolInputChunks 把累积到的参数切成若干 partial_json 分片。
+//
+// 正常情况下只有一个分片（整段 JSON）。仅当上游给的参数拼起来不是合法 JSON 时
+// 才退化成逐字符下发——这样至少保住「客户端拼出的原文与上游一致」这个性质
+// （官方 SDK 会原样保留 partial_json），而不是因为一次解析失败就把整次工具调用
+// 变成空参数。
+func toolInputChunks(args string) []string {
+	if args == "" {
+		// 一个参数都没有：给出合法空对象，保证客户端解析不会失败。
+		return []string{"{}"}
+	}
+	if json.Valid([]byte(args)) {
+		return []string{args}
+	}
+	// 上游给的不是合法 JSON：原样分块下发，不猜测、不丢弃内容。
+	// 按 rune 切分，保证多字节 UTF-8 不会被从中间截断。
+	out := make([]string, 0, len(args))
+	for _, r := range args {
+		out = append(out, string(r))
+	}
+	return out
 }
 
 func normalizeOpenAIResponse(obj map[string]any) map[string]any {
