@@ -55,44 +55,20 @@ func TestParseRecommendedModelsOrdersGroupsAndKeepsUnknown(t *testing.T) {
 	}
 }
 
-// 中文翻译：命中映射时替换，未命中时保留原文，空描述不动。
-func TestLocalizeDescription(t *testing.T) {
-	// 命中映射
-	if got := localizeDescription("Top open weights model"); got != "顶尖开源权重模型" {
-		t.Fatalf("命中映射未翻译: %q", got)
-	}
-	// 首尾空白也应能命中
-	if got := localizeDescription("  Top open weights model \n"); got != "顶尖开源权重模型" {
-		t.Fatalf("带空白未翻译: %q", got)
-	}
-	// 标点差异（上游同一描述在两组中一个有句点一个没有）都必须命中
-	for _, variant := range []string{
-		"Latest natively multimodal model in the GLM-5 series",
-		"Latest natively multimodal model in the GLM-5 series.",
-	} {
-		if got := localizeDescription(variant); got != "GLM-5 系列中最新的原生多模态模型" {
-			t.Fatalf("标点差异未翻译 %q: %q", variant, got)
-		}
-	}
-	// 未命中：保留原文，不丢内容
-	const upstream = "Some brand new description from upstream"
-	if got := localizeDescription(upstream); got != upstream {
-		t.Fatalf("未命中的描述应保留原文, got %q", got)
-	}
-	// 空描述保持为空
-	if got := localizeDescription("   "); got != "   " {
-		t.Fatalf("空描述不应被改动, got %q", got)
-	}
-}
-
-// 解析阶段必须应用翻译，否则前端拿到的仍是英文。
-func TestParseRecommendedModelsAppliesChineseDescriptions(t *testing.T) {
+// 描述必须原样透传上游的英文原文——不再做任何翻译。
+//
+// 背景：之前这里有一张「英文 → 中文」对照表，但上游新增或改写过的描述命中不了，
+// 界面里就变成中英混杂——新增的模型永远显示英文。这条测试锁住「不再翻译」这个决定，
+// 避免有人又把对照表加回来，也顺带保证描述内容本身不会被改动。
+func TestDescriptionsPassThroughUntranslated(t *testing.T) {
+	const newUpstream = "Some brand new description from upstream"
 	body := []byte(`{
 	  "free": [
 	    {"id":"a","name":"a","description":"Top open weights model","tags":[]},
-	    {"id":"b","name":"b","description":"Unknown en text","tags":[]}
+	    {"id":"b","name":"b","description":"` + newUpstream + `","tags":[]}
 	  ]
 	}`)
+
 	groups, err := parseRecommendedModels(body)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -100,58 +76,14 @@ func TestParseRecommendedModelsAppliesChineseDescriptions(t *testing.T) {
 	if len(groups) != 1 || len(groups[0].Models) != 2 {
 		t.Fatalf("unexpected groups: %+v", groups)
 	}
-	if got := groups[0].Models[0].Description; got != "顶尖开源权重模型" {
-		t.Fatalf("已映射的描述未翻译: %q", got)
-	}
-	if got := groups[0].Models[1].Description; got != "Unknown en text" {
-		t.Fatalf("未映射的描述应保留原文: %q", got)
-	}
-}
 
-// 翻译表必须完整覆盖线上描述，避免漏翻。
-func TestDescriptionZhCoversKnownUpstreamText(t *testing.T) {
-	known := []string{
-		"Kimi K3 is Moonshot AI’s new flagship MoE model for agentic coding",
-		"SpaceXAI's smartest model with frontier performance on coding",
-		"Fast and efficient with 1M context window",
-		"Meta’s multimodal reasoning model for experimentation, learning, and early-stage agentic, multi-agent, and coding workflows.",
-		"Latest natively multimodal model in the GLM-5 series.",
-		"Strong model for office productivity, document-intensive work, and coding.",
-		"Latest coding agent model from Poolside",
-		"Leading open weights model (reliability might be unstable and will consume usage faster than others)",
-		"Top open weights model",
-		"Qwen's New SOTA coding model",
-		"Frontier reasoning and coding with 1M context window",
-		"Smarter and more efficient, with 1M context window",
-		"Strong multimodal model for long-horizon agent tasks",
-		"Flagship agent model with 1M context window",
-		"Frontier coding and agent model with 1M context window",
-		"Latest Kimi model specialized for agentic coding",
-		"Z-AI's new top open-weights model",
-		"Fast multimodal agent model with vision and video input",
-		"Top open model for long autonomous coding runs",
-		"Fast and efficient MiMo for everyday coding",
+	// 这句以前会被翻成「顶尖开源权重模型」；现在必须保持英文原文。
+	if got := groups[0].Models[0].Description; got != "Top open weights model" {
+		t.Errorf("描述被改动了（不应再做翻译）: %q", got)
 	}
-	for _, en := range known {
-		zh, ok := descriptionZh[en]
-		if !ok {
-			t.Errorf("线上描述缺少翻译: %q", en)
-			continue
-		}
-		if zh == "" || zh == en {
-			t.Errorf("翻译为空或未变更: %q", en)
-		}
-		// 翻译结果应当是中文（至少含一个中日韩统一表意文字）
-		hasHan := false
-		for _, r := range zh {
-			if r >= 0x4E00 && r <= 0x9FFF {
-				hasHan = true
-				break
-			}
-		}
-		if !hasHan {
-			t.Errorf("译文不含中文: %q -> %q", en, zh)
-		}
+	// 上游新增的描述本来就命不中对照表，现在也必须原样透传。
+	if got := groups[0].Models[1].Description; got != newUpstream {
+		t.Errorf("描述未原样透传: %q", got)
 	}
 }
 

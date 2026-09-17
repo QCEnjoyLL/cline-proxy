@@ -199,6 +199,26 @@ h2{font-size:21px;font-weight:650;letter-spacing:-.021em;line-height:1.25;margin
 .section-body a{color:var(--accent);text-decoration:none}
 @media (hover:hover) and (pointer:fine){.section-body a:hover{text-decoration:underline}}
 
+/* ===== 可折叠区块（默认收起，展开后才渲染内容） ===== */
+details.collapse{display:block}
+details.collapse>summary{
+  list-style:none;cursor:pointer;user-select:none;
+  transition:background var(--t-press) var(--ease-out);
+}
+details.collapse>summary::-webkit-details-marker{display:none}
+details.collapse>summary::marker{content:''}
+/* 用两条边框拼出箭头，不引字体图标，也能跟着主题色走 */
+details.collapse>summary .chev{
+  width:7px;height:7px;flex:none;margin-left:3px;
+  border-right:1.6px solid var(--text2);border-bottom:1.6px solid var(--text2);
+  transform:rotate(-45deg);transition:transform var(--t-base) var(--ease-out);
+}
+details.collapse[open]>summary .chev{transform:rotate(45deg)}
+/* 收起时底部不留分隔线，免得和外框贴成两条 */
+details.collapse:not([open])>summary{border-bottom:0}
+@media (hover:hover) and (pointer:fine){details.collapse>summary:hover{background:var(--surface-2)}}
+@media (prefers-reduced-motion:reduce){details.collapse>summary .chev{transition:none}}
+
 .tabs{display:flex;border-bottom:1px solid var(--border);padding:0 6px;gap:2px}
 .tab{
   padding:11px 16px;cursor:pointer;color:var(--text2);font-size:13px;font-weight:500;
@@ -651,6 +671,18 @@ html.theme-anim,html.theme-anim *{
     </p>
     <div id="recommendedGroups">加载中...</div>
   </div>
+</div>
+<div class="section">
+  <details class="collapse" id="catalogFold" ontoggle="onCatalogToggle()">
+    <summary class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-box"/></svg>全部模型<span class="chev"></span></summary>
+    <div class="section-body">
+      <p style="color:var(--text2);margin-bottom:12px">
+        数据来自 <span class="mono">api.cline.bot/api/v1/ai/cline/models</span>，默认收起，展开后才抓取（400+ 条，服务端缓存 30 分钟）。
+        用法与上方分组一致：点击模型卡片单独添加，点击「全部添加」一键加入全部模型，重复的会自动跳过。
+      </p>
+      <div id="catalogModels"><div class="empty">展开后加载…</div></div>
+    </div>
+  </details>
 </div>
 
 <div class="section">
@@ -1522,6 +1554,8 @@ async function loadModels() {
     // 同步模型库的「已启用」标记，避免两处状态不一致
     mInstalled = models.map(m => m.id);
     if (mDataGroups.length) renderRecommended();
+    // 底部折叠区若已加载，一并刷新「已启用」标记
+    if (mCatalogLoaded) renderCatalog();
   } catch (e) {
     // 两处容器都要给错误态，避免某个区块永远停在「加载中...」
     _('modelsList').textContent = '加载失败';
@@ -1569,6 +1603,14 @@ let mDataGroups = [];     // 最近一次取到的分组数据
 let mFetchedAt = 0;       // 数据抓取时间戳
 let mAutoTimer = null;    // 自动刷新定时器
 
+// ===== 底部「全部模型」折叠区 =====
+// 上游这份清单有 400+ 条（约 500 KB），只在用户展开时才抓取，也不参与上面的 10 分钟自动刷新。
+const CATALOG_REFRESH_MS = 30 * 60 * 1000;  // 浏览器侧节流，对齐服务端的 30 分钟缓存
+let mCatalog = [];          // 最近一次取到的全部模型
+let mCatalogLoaded = false; // 是否已取到过数据（决定要不要跟着别处一起重渲染）
+let mCatalogFetchedAt = 0;  // 服务端数据的抓取时间（只用于展示「数据 X 前」）
+let mCatalogCheckedAt = 0;  // 上次向服务端取数的时间（本机时钟，节流用）
+
 const AUTO_REFRESH_MS = 10 * 60 * 1000;   // 页面可见时每 10 分钟自动刷新一次
 
 function relTime(ts) {
@@ -1611,6 +1653,28 @@ async function loadRecommended(force) {
     btn.innerHTML = "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-refresh\"/></svg>刷新数据";
   }
 }
+// 模型卡片 HTML：上方分组与底部「全部模型」共用同一套渲染，保证两处格式、交互完全一致。
+function modelCardsHTML(models, installed) {
+  return models.map(m => {
+    const has = installed.has(m.id);
+    const tags = (m.tags || []).filter(Boolean).map(t =>
+      '<span class="badge">' + esc(t) + '</span>').join('');
+    const name = m.name || m.id;
+    const tip = [name, m.id, m.description, '', has ? '已启用 · 点击复制 ID' : '点击添加'].filter(Boolean).join('\n');
+    return '<div class="mcard' + (has ? ' installed' : '') + '" role="button" tabindex="0"' +
+      ' data-id="' + attr(m.id) + '" data-installed="' + (has ? '1' : '0') + '"' +
+      ' title="' + attr(tip) + '">' +
+      '<div class="mrow">' +
+        '<span class="mname">' + esc(name) + '</span>' +
+        (m.id && m.id !== name ? '<span class="mid">' + esc(m.id) + '</span>' : '') +
+        tags +
+        '<span class="mini add" data-act="add" title="添加此模型">＋</span>' +
+        '<span class="mini" data-act="copy" title="复制模型 ID">⧉</span>' +
+      '</div>' +
+      (m.description ? '<div class="mdesc">' + esc(m.description) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
 
 function renderRecommended() {
   const box = _('recommendedGroups');
@@ -1631,26 +1695,6 @@ function renderRecommended() {
     // 该组中尚未添加的模型数量，用于决定「全部添加」是否可点
     const pending = models.filter(m => !installed.has(m.id)).length;
 
-    const cards = models.map(m => {
-      const has = installed.has(m.id);
-      const tags = (m.tags || []).filter(Boolean).map(t =>
-        '<span class="badge">' + esc(t) + '</span>').join('');
-      const name = m.name || m.id;
-      const tip = [name, m.id, m.description, '', has ? '已启用 · 点击复制 ID' : '点击添加'].filter(Boolean).join('\n');
-      return '<div class="mcard' + (has ? ' installed' : '') + '" role="button" tabindex="0"' +
-        ' data-id="' + attr(m.id) + '" data-installed="' + (has ? '1' : '0') + '"' +
-        ' title="' + attr(tip) + '">' +
-        '<div class="mrow">' +
-          '<span class="mname">' + esc(name) + '</span>' +
-          (m.id && m.id !== name ? '<span class="mid">' + esc(m.id) + '</span>' : '') +
-          tags +
-          '<span class="mini add" data-act="add" title="添加此模型">＋</span>' +
-          '<span class="mini" data-act="copy" title="复制模型 ID">⧉</span>' +
-        '</div>' +
-        (m.description ? '<div class="mdesc">' + esc(m.description) + '</div>' : '') +
-      '</div>';
-    }).join('');
-
     return '<div class="mgroup" data-key="' + attr(g.key) + '">' +
       '<div class="mgroup-head">' +
         '<span class="dot" style="background:' + meta.color + '"></span>' +
@@ -1663,7 +1707,7 @@ function renderRecommended() {
           ' onclick="addGroup(\'' + jsStr(g.key) + '\')">' +
           (pending ? "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-plus\"/></svg>全部添加 (" + pending + ')' : "<svg class=\"ic\" aria-hidden=\"true\"><use href=\"#i-check\"/></svg>已全部添加") + '</button>' +
       '</div>' +
-      '<div class="mcards">' + cards + '</div>' +
+      '<div class="mcards">' + modelCardsHTML(models, installed) + '</div>' +
     '</div>';
   }).join('');
 
@@ -1705,6 +1749,77 @@ function addGroup(key) {
   addModels(ids, title + ' 分组已添加');
 }
 
+// ===== 底部「全部模型」折叠区 =====
+// 展开时才向服务端取数；服务端有 30 分钟缓存，所以重复展开基本不会回源。
+async function loadCatalog() {
+  const box = _('catalogModels');
+  if (!box) return;
+  // 无论成败都算「问过一次」：上游故障时不该每次展开都再打一遍（那要等到超时）
+  mCatalogCheckedAt = Date.now();
+  if (!mCatalog.length) box.innerHTML = '<div class="empty">正在抓取…</div>';
+  try {
+    const d = await api('GET', '/model-catalog');
+    mCatalog = d.data.models || [];
+    mCatalogFetchedAt = d.data.fetchedAt || 0;
+    // 服务端一并算好了已启用清单，直接用：展开可能发生在 /models 返回之前，
+    // 那时 mInstalled 还是空的，会把已启用的模型显示成「待添加」。
+    if (Array.isArray(d.data.installed)) mInstalled = d.data.installed;
+    mCatalogLoaded = true;
+    renderCatalog();
+    if (d.data.stale && d.error) toast('上游抓取失败，显示上次缓存: ' + d.error, 'error');
+  } catch (e) {
+    // 已经有数据就保留旧数据，只在完全没数据时才把错误铺在区块里
+    if (!mCatalog.length) box.innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>';
+    else toast('全部模型加载失败: ' + e.message, 'error');
+  }
+}
+
+// details 展开时才抓取，收起时什么都不做。
+function onCatalogToggle() {
+  const fold = _('catalogFold');
+  if (!fold || !fold.open) return;
+  // 30 分钟内不重复问服务端（它的缓存在这段时间里也只会返回同一份数据）。
+  // 判据必须是「上次取数的时间」而不是服务端数据的年龄：上游故障退回过期缓存时，
+  // 数据年龄永远是旧的，拿它判断会导致每次展开都重新打一次上游。
+  if (Date.now() - mCatalogCheckedAt < CATALOG_REFRESH_MS) { renderCatalog(); return; }
+  loadCatalog();
+}
+
+// 渲染成与上方分组一致的形态：同一套分组头 + 同一套卡片。
+function renderCatalog() {
+  const box = _('catalogModels');
+  if (!box) return;
+  if (!mCatalog.length) {
+    box.innerHTML = '<div class="empty">暂无数据</div>';
+    return;
+  }
+  const installed = new Set(mInstalled);
+  const pending = mCatalog.filter(m => !installed.has(m.id)).length;
+  box.innerHTML = '<div class="mgroup" data-key="__catalog__">' +
+    '<div class="mgroup-head">' +
+      '<span class="dot" style="background:var(--text2)"></span>' +
+      '<h3>全部模型</h3>' +
+      '<span class="gsub">（api/v1/ai/cline/models）</span>' +
+      '<span class="gcount">共 ' + mCatalog.length + ' 个' +
+        (pending ? ' · 待添加 ' + pending : ' · 已全部添加') +
+        ' · 数据 ' + relTime(mCatalogFetchedAt) + '</span>' +
+      '<button class="btn btn-sm' + (pending ? ' btn-success' : '') + '"' +
+        (pending ? '' : ' disabled') +
+        ' onclick="addCatalogAll()">' +
+        (pending ? '<svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>全部添加 (' + pending + ')' : '<svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>已全部添加') + '</button>' +
+    '</div>' +
+    '<div class="mcards">' + modelCardsHTML(mCatalog, installed) + '</div>' +
+  '</div>';
+}
+
+// 一键添加全部模型（已存在的由服务端跳过）
+function addCatalogAll() {
+  const installed = new Set(mInstalled);
+  const ids = mCatalog.map(m => m.id).filter(id => id && !installed.has(id));
+  if (!ids.length) { toast('全部模型都已添加', 'info'); return; }
+  addModels(ids, '全部模型已添加');
+}
+
 // 统一走批量接口；服务端对已存在的 ID 返回 skipped，不会重复添加。
 async function addModels(ids, okMsg) {
   if (!ids || !ids.length) return;
@@ -1715,6 +1830,7 @@ async function addModels(ids, okMsg) {
     const failed = d.data.failed || {};
     mInstalled = mInstalled.concat(added);
     renderRecommended();
+    if (mCatalogLoaded) renderCatalog();
     await loadModels();
 
     const parts = [];
@@ -1753,6 +1869,9 @@ function startAutoRefresh() {
 
 _('recommendedGroups').addEventListener('click', onModelCardClick);
 _('recommendedGroups').addEventListener('keydown', onModelCardKey);
+// 底部折叠区复用同一套卡片交互
+_('catalogModels').addEventListener('click', onModelCardClick);
+_('catalogModels').addEventListener('keydown', onModelCardKey);
 
 // ========== 配置加载 ==========
 async function loadConfig() {

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -44,62 +43,11 @@ type modelGroup struct {
 // recommendedGroupOrder 固定分组的展示顺序；上游新增的分组会按字典序排在末尾。
 var recommendedGroupOrder = []string{"recommended", "free", "clinePass", "clineCloud"}
 
-// descriptionZh 是上游英文描述的官方中文对照。
+// 模型描述一律原样转发上游的英文原文，不做中文翻译。
 //
-// 为什么在服务端做翻译而不是前端：描述是上游固定文案，服务端翻译一次即可，
-// 前端浏览器直连不到该接口（CORS），也不该为此额外请求翻译服务。
-// 上游若新增或改写描述，未命中映射时按原文返回，不会丢内容。
-var descriptionZh = map[string]string{
-	"Kimi K3 is Moonshot AI’s new flagship MoE model for agentic coding":                                                           "Kimi K3 是 Moonshot AI 面向智能体编码的新旗舰 MoE 模型",
-	"SpaceXAI's smartest model with frontier performance on coding":                                                                "SpaceXAI 最智能的模型，编码能力达到前沿水平",
-	"Fast and efficient with 1M context window":                                                                                    "快速高效，支持 100 万 token 上下文",
-	"Meta’s multimodal reasoning model for experimentation, learning, and early-stage agentic, multi-agent, and coding workflows.": "Meta 的多模态推理模型，适用于实验、学习，以及早期的智能体、多智能体与编码工作流",
-	"Latest natively multimodal model in the GLM-5 series.":                                                                        "GLM-5 系列中最新的原生多模态模型",
-	"Strong model for office productivity, document-intensive work, and coding.":                                                   "适合办公生产力、文档密集型任务与编码的强劲模型",
-	"Latest coding agent model from Poolside":                                                                                      "Poolside 最新的编码智能体模型",
-	"Leading open weights model (reliability might be unstable and will consume usage faster than others)":                         "领先的开源权重模型（稳定性可能欠佳，且额度消耗快于其他模型）",
-	"Top open weights model":                                  "顶尖开源权重模型",
-	"Qwen's New SOTA coding model":                            "Qwen 全新的 SOTA 编码模型",
-	"Frontier reasoning and coding with 1M context window":    "前沿推理与编码能力，支持 100 万 token 上下文",
-	"Smarter and more efficient, with 1M context window":      "更智能、更高效，支持 100 万 token 上下文",
-	"Strong multimodal model for long-horizon agent tasks":    "面向长周期智能体任务的强劲多模态模型",
-	"Flagship agent model with 1M context window":             "旗舰级智能体模型，支持 100 万 token 上下文",
-	"Frontier coding and agent model with 1M context window":  "前沿编码与智能体模型，支持 100 万 token 上下文",
-	"Latest Kimi model specialized for agentic coding":        "Kimi 最新专为智能体编码打造的模型",
-	"Z-AI's new top open-weights model":                       "Z-AI 全新的顶级开源权重模型",
-	"Fast multimodal agent model with vision and video input": "快速多模态智能体模型，支持图像与视频输入",
-	"Top open model for long autonomous coding runs":          "顶尖开源模型，适合长时间自主编码任务",
-	"Fast and efficient MiMo for everyday coding":             "快速高效的 MiMo，胜任日常编码",
-}
-
-// localizeDescription 返回描述的中文版本；无对应翻译时回退为原文。
-//
-// 上游同一句描述在不同分组里可能带/不带结尾句点
-// （例如 "Latest natively multimodal model in the GLM-5 series" 与 "...series."），
-// 因此这里对结尾标点做容错查找，避免因一个句点漏翻。
-func localizeDescription(desc string) string {
-	trimmed := strings.TrimSpace(desc)
-	if trimmed == "" {
-		return desc
-	}
-	for _, candidate := range []string{
-		trimmed,
-		strings.TrimSuffix(trimmed, "."),
-		trimmed + ".",
-	} {
-		if zh, ok := descriptionZh[candidate]; ok {
-			return zh
-		}
-	}
-	return desc
-}
-
-// localizeModels 就地替换一组模型的描述为中文。
-func localizeModels(models []remoteModel) {
-	for i := range models {
-		models[i].Description = localizeDescription(models[i].Description)
-	}
-}
+// 之前这里有一张「上游英文 → 中文」的对照表。问题在于上游随时会新增或改写描述，
+// 未命中对照时只能回退原文，于是界面里中英混杂——**新增的模型永远不会被翻译**，
+// 看上去更像漏翻/错翻。改成统一显示原文：行为一致，也不会因为上游改一句文案而失效。
 
 var (
 	recommendedMu    sync.Mutex
@@ -130,7 +78,7 @@ func parseRecommendedModels(body []byte) ([]modelGroup, error) {
 		if !ok {
 			continue
 		}
-		localizeModels(models)
+		// 描述原样转发（见文件上方关于不做翻译的说明）
 		groups = append(groups, modelGroup{Key: key, Models: models})
 		delete(raw, key)
 	}
@@ -142,7 +90,7 @@ func parseRecommendedModels(body []byte) ([]modelGroup, error) {
 	}
 	sort.Strings(rest)
 	for _, key := range rest {
-		localizeModels(raw[key])
+		// 同上：描述不翻译
 		groups = append(groups, modelGroup{Key: key, Models: raw[key]})
 	}
 
