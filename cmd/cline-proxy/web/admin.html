@@ -678,7 +678,7 @@ html.theme-anim,html.theme-anim *{
     <div class="section-body">
       <p style="color:var(--text2);margin-bottom:12px">
         数据来自 <span class="mono">api.cline.bot/api/v1/ai/cline/models</span>，默认收起，展开后才抓取（400+ 条，服务端缓存 30 分钟）。
-        展开后按供应商（模型 ID 里 <span class="mono">/</span> 前那一段）分成若干组，每组都可以单独「全部添加」，也可以在顶部一次性添加全部；重复的会自动跳过。
+        展开后按供应商（模型 ID 里 <span class="mono">/</span> 前那一段）分成若干组，每组标题右侧都有「全部添加」，点哪组加哪组；重复的会自动跳过。
       </p>
       <div id="catalogModels"><div class="empty">展开后加载…</div></div>
     </div>
@@ -1819,7 +1819,8 @@ function renderCatalog() {
   const installed = new Set(mInstalled);
   const pending = mCatalog.filter(m => !installed.has(m.id)).length;
 
-  // 总览：整体计数与一次性添加全部；逐组添加在下面的各组标题右侧
+  // 总览行只做统计，刻意不放「全部添加」：一次提交 400+ 个 ID 会让服务端逐个落盘，
+  // 按供应商分组添加更可控。逐组添加的按钮在下面各组标题右侧。
   let html = '<div class="mgroup" data-key="__catalog__">' +
     '<div class="mgroup-head">' +
       '<span class="dot" style="background:var(--accent)"></span>' +
@@ -1828,10 +1829,6 @@ function renderCatalog() {
       '<span class="gcount">共 ' + mCatalog.length + ' 个' +
         (pending ? ' · 待添加 ' + pending : ' · 已全部添加') +
         ' · 数据 ' + relTime(mCatalogFetchedAt) + '</span>' +
-      '<button class="btn btn-sm' + (pending ? ' btn-success' : '') + '"' +
-        (pending ? '' : ' disabled') +
-        ' onclick="addCatalogAll()">' +
-        (pending ? '<svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>全部添加 (' + pending + ')' : '<svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>已全部添加') + '</button>' +
     '</div>' +
   '</div>';
 
@@ -1867,14 +1864,6 @@ function addCatalogGroup(btn) {
   const ids = g.models.map(m => m.id).filter(id => id && !installed.has(id));
   if (!ids.length) { toast('该分组的模型已全部添加', 'info'); return; }
   addModels(ids, g.key + ' 分组已添加');
-}
-
-// 一键添加全部模型（已存在的由服务端跳过）
-function addCatalogAll() {
-  const installed = new Set(mInstalled);
-  const ids = mCatalog.map(m => m.id).filter(id => id && !installed.has(id));
-  if (!ids.length) { toast('全部模型都已添加', 'info'); return; }
-  addModels(ids, '全部模型已添加');
 }
 
 // 统一走批量接口；服务端对已存在的 ID 返回 skipped，不会重复添加。
