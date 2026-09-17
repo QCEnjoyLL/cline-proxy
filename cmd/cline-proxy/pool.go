@@ -341,7 +341,6 @@ func refreshAccountToken(acc *Account) error {
 func pickAccount(modelID string) *Account {
 	p := loadPool()
 	poolMu.Lock()
-	defer poolMu.Unlock()
 
 	now := time.Now()
 	active := make([]*Account, 0, len(p.Accounts))
@@ -359,6 +358,7 @@ func pickAccount(modelID string) *Account {
 	}
 
 	if len(active) == 0 {
+		poolMu.Unlock()
 		return nil
 	}
 
@@ -381,7 +381,18 @@ func pickAccount(modelID string) *Account {
 		p.CurrentIdx = (p.CurrentIdx + 1) % len(active)
 	}
 
-	savePoolLocked()
+	// CurrentIdx 变了要落盘，但**磁盘 I/O 必须放在池锁之外**：这个函数在每个
+	// 代理请求上都会被调用，而池锁是所有请求共享的——持锁写盘会让所有并发请求
+	// 排队等磁盘，上游一慢就把锁的放大效应放得很大。
+	// 做法与 savePool 一致：锁内序列化（拿到的是一致快照），锁外写。
+	data, err := marshalPool()
+	poolMu.Unlock()
+
+	if err == nil {
+		if werr := writePoolFile(data); werr != nil {
+			log.Printf("Failed to persist accounts after picking an account: %v", werr)
+		}
+	}
 	return acc
 }
 

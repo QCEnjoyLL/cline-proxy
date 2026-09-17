@@ -435,7 +435,9 @@ func handleAdminAccountAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	addAccount(acc)
-	log.Printf("Account added via API: %s", req.Email)
+	// 用 truncateEmail 保持与请求路径日志一致：容器日志的可见范围通常比
+	// 管理面板宽，不该在里面出现完整账号邮箱。
+	log.Printf("Account added via API: %s", truncateEmail(req.Email))
 
 	writeAPI(w, http.StatusOK, apiResponse{
 		Success: true,
@@ -561,7 +563,7 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		state.Success = true
 		state.Email = email
 		oauthSessionsMu.Unlock()
-		log.Printf("OAuth account added: %s", email)
+		log.Printf("OAuth account added: %s", truncateEmail(email))
 	}()
 
 	writeAPI(w, http.StatusOK, apiResponse{
@@ -662,7 +664,9 @@ func handleSSOImport(w http.ResponseWriter, r *http.Request) {
 			token := strings.TrimPrefix(line, "workos:")
 			resp, err := refreshClineToken(token)
 			if err != nil {
-				errors = append(errors, fmt.Sprintf("token %s...: %v", truncate(token, 16), err))
+				// 只报长度、不回显前缀：这条错误会随响应交给客户端，而这批 token 是
+				// 用户正在导入的账号凭据，16 个字符已足以用来关联/比对。
+				errors = append(errors, fmt.Sprintf("token (len %d): %v", len(token), err))
 				continue
 			}
 			email := req.Email
@@ -780,7 +784,7 @@ func handleAdminRefreshAll(w http.ResponseWriter, r *http.Request) {
 	poolMu.Unlock()
 	for _, a := range accounts {
 		if err := refreshAccountToken(a); err != nil {
-			log.Printf("Refresh failed for %s: %v", a.Email, err)
+			log.Printf("Refresh failed for %s: %v", truncateEmail(a.Email), err)
 		}
 	}
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "All tokens refreshed"})

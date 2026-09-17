@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +30,20 @@ const (
 	// 一个恶意/异常的上游可以用递增下标把 map 撑到内存耗尽（模型单次
 	// 响应里常见工具数是几十个量级，300 足够宽松）。
 	maxPendingToolCalls = 300
+	// shutdownGracePeriod 是优雅退出时等待进行中请求结束的时长。
+	//
+	// 取 10s 是为了对齐 docker stop 的默认宽限期：超过它 docker 会直接 SIGKILL，
+	// 设更长没有意义（确实需要更久就同时调大 compose 里的 stop_grace_period）。
+	// 这个时间只用于「收尾」——把已经拿到的数据写完、发出终止事件，不是等上游生成完。
+	shutdownGracePeriod = 10 * time.Second
+
+	// maxRequestBodyBytes 是代理端点接受的请求体上限（32 MiB）。
+	//
+	// 存在的理由：这个端口在 docker-compose 里直接对外发布，而未配置 API Key 时
+	// 鉴权完全放行，任何人都能 POST 任意大的 body；没有上限时 io.ReadAll 会把它
+	// 整个读进内存，足以把容器撑爆。32 MiB 远高于正常用量（128k tokens 的上下文
+	// 大约几百 KB～1 MB），不会误伤正常请求。
+	maxRequestBodyBytes = 32 << 20
 )
 
 // upstreamError 是一个带「该回给客户端什么状态码」的上游错误。
@@ -98,6 +117,19 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 	})
 }
 
+// bodyTooLargeStatus 把「读请求体失败」映射成状态码。
+//
+// http.MaxBytesReader 超限时返回的是 *http.MaxBytesError，对应 413；其它读取
+// 失败（连接中断等）仍按 400 处理——之前一律回 400，客户端无法区分「body 太大」
+// 和「body 坏了」。
+func bodyTooLargeStatus(err error) int {
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
+
 var passThroughKeys = []string{
 	"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call",
 	"temperature", "top_p", "top_k", "stop", "presence_penalty", "frequency_penalty",
@@ -131,7 +163,7 @@ func startProxy(port int) error {
 			// Try to pre-warm tokens
 			if a.AccessToken == "" || time.Now().UnixMilli() >= a.ExpiresAt {
 				if err := refreshAccountToken(a); err != nil {
-					log.Printf("  Pre-warm failed for %s: %v", a.Email, err)
+					log.Printf("  Pre-warm failed for %s: %v", truncateEmail(a.Email), err)
 					continue
 				}
 			}
@@ -239,10 +271,15 @@ func startProxy(port int) error {
 			return
 		}
 
+		// 限制请求体大小：这个端口在 docker-compose 里是直接对外发布的，而在
+		// 未配置 API Key 时 apiKeyHandler 完全放行——没有上限的话，任何人都能
+		// POST 一个任意大的 body，让 io.ReadAll 把它整个读进内存直至 OOM。
+		// 32 MiB 远大于正常请求（128k tokens 的上下文约几百 KB～1 MB）。
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": map[string]string{"message": err.Error(), "type": "parse_error"},
+			writeJSON(w, bodyTooLargeStatus(err), map[string]any{
+				"error": map[string]string{"message": err.Error(), "type": "request_too_large"},
 			})
 			return
 		}
@@ -284,7 +321,7 @@ func startProxy(port int) error {
 			}
 		}
 
-		resp, err := callClineAPI(params, isStream)
+		resp, err := callClineAPI(r.Context(), params, isStream)
 		if err != nil {
 			log.Printf("  api error: %v", err)
 			// 按上游语义回状态码（429 原样转达等），不再一律压成 500。
@@ -317,6 +354,13 @@ func startProxy(port int) error {
 	server := &http.Server{
 		Addr:    addr,
 		Handler: requireAdminAuth(mux),
+
+		// ReadHeaderTimeout 防 slowloris：只发一半请求头的连接不该长期占着。
+		ReadHeaderTimeout: 10 * time.Second,
+		// IdleTimeout 回收 keep-alive 空闲连接。
+		IdleTimeout: 120 * time.Second,
+		// 刻意不设 WriteTimeout：它覆盖整个响应写入过程，会把正常的
+		// 长时间流式（SSE）响应一起掐断。
 	}
 
 	fmt.Println("")
@@ -330,7 +374,32 @@ func startProxy(port int) error {
 	fmt.Printf("  Accounts: %d total, %d active\n", len(loadPool().Accounts), activeCount)
 	fmt.Println(strings.Repeat("=", 58))
 
-	return server.ListenAndServe()
+	// 优雅退出：docker stop / Ctrl-C 会发 SIGTERM/SIGINT，直接被杀会让正在输出的
+	// 流式响应被硬切、也没有任何收尾。这里捕获信号后给进行中的请求一点时间自然结束。
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe() }()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case sig := <-sigCh:
+		log.Printf("%s received: shutting down gracefully (up to %s)", sig, shutdownGracePeriod)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			// 超时（还有流式请求没结束）时强制收尾，保证进程一定能退出。
+			log.Printf("graceful shutdown incomplete: %v", err)
+			_ = server.Close()
+		}
+		return nil
+	}
 }
 
 func corsHandler(h http.HandlerFunc) http.HandlerFunc {
@@ -457,7 +526,10 @@ func clineHeaders(token, sessionID string) http.Header {
 	return h
 }
 
-func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
+// ctx 必须是发起请求的 HTTP handler 的 r.Context()：客户端断开时它会取消，
+// 从而中止已经发往上游的请求——否则客户端早走了，我们还在替它消耗账号额度、
+// 占着连接直到上游自己结束。传 context.Background() 会失去这个能力。
+func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*http.Response, error) {
 	// 冷却过滤与冷却标记都用「实际发给上游的模型」（见 effectiveModel），
 	// 两者必须一致，否则冷却会标记到永远不会被查询的 key。
 	model := effectiveModel(params)
@@ -487,7 +559,7 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 		return nil, fmt.Errorf("marshal body: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(ctx, "POST", clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -519,7 +591,7 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 			// 必须重建请求：原 req.Body 已被首次发送消费并关闭，
 			// 复用同一个 *http.Request 重试会因 body 长度不符而失败，
 			// 导致 token 刷新后仍然报错（旧实现在这里永远重试不成功）。
-			retryReq, rerr := http.NewRequest("POST", clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
+			retryReq, rerr := http.NewRequestWithContext(ctx, "POST", clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
 			if rerr != nil {
 				return nil, newUpstreamError(http.StatusBadGateway, "api_error",
 					"rebuild retry request: %v", rerr)
@@ -610,6 +682,34 @@ func getMsgCount(params map[string]any) int {
 	return 0
 }
 
+// maxSSELineBytes 是单条 SSE 行的长度上限（1 MiB）。
+//
+// 需要它的原因：bufio.Reader.ReadString 在遇到不带 '\n' 的输入时会不断扩容内部
+// 缓冲，所以上游（或任何中间设备）只要吐一条没有换行的超长数据，就能让内存无界
+// 增长直到 OOM。正常 SSE 帧远小于 1 MiB（最长的也就是带工具参数的那几条）。
+const maxSSELineBytes = 1 << 20
+
+// errSSELineTooLong 表示上游单行超过 maxSSELineBytes。
+var errSSELineTooLong = errors.New("SSE line exceeds size limit")
+
+// readSSELine 读一行（含结尾的 '\n'），语义与 bufio.Reader.ReadString('\n') 一致，
+// 但会在单行超过 maxSSELineBytes 时返回 errSSELineTooLong 而不是继续吃内存。
+func readSSELine(r *bufio.Reader) (string, error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		if err == bufio.ErrBufferFull {
+			// 这一行还没结束，继续攒；只在超过上限时才放弃。
+			if len(buf) > maxSSELineBytes {
+				return "", errSSELineTooLong
+			}
+			continue
+		}
+		return string(buf), err
+	}
+}
+
 func handleStreamResponse(w http.ResponseWriter, upstream *http.Response) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -625,11 +725,26 @@ func handleStreamResponse(w http.ResponseWriter, upstream *http.Response) {
 
 	reader := bufio.NewReader(upstream.Body)
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := readSSELine(reader)
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
+				// 正常结束：上游已把剩余内容给了我们（可能带一个不带换行的尾巴）。
 				if line != "" {
 					w.Write([]byte(line + "\n"))
+				}
+			} else {
+				// 上游中途出错（连接被重置、单行超长等）：必须发一个 error chunk
+				// 再结束。旧实现只是 break，客户端拿不到任何错误信号，只能等连接
+				// 关闭才察觉，看起来就像「回答被莫名截断」。
+				log.Printf("  stream: upstream read error: %v", err)
+				if msg, mErr := json.Marshal(map[string]any{
+					"error": map[string]string{
+						"message": "upstream stream failed: " + err.Error(),
+						"type":    "upstream_error",
+					},
+				}); mErr == nil {
+					w.Write([]byte("data: " + string(msg) + "\n\n"))
+					flusher.Flush()
 				}
 			}
 			break
@@ -711,22 +826,26 @@ type anthropicMsg struct {
 	Content any    `json:"content"`
 }
 
+// toolAccumulator 累积单个流式工具调用的分片。
+//
+// 字段说明：
+//   - started 表示 content_block_start 已发出；emitted 表示整块（含 stop）已完成。
+//     两者要分开：参数可能分帧到达，必须先把块打开、再边收边发 delta。
+//   - blockIndex 是本工具块在 Anthropic 内容数组里的下标。它与 OpenAI 的
+//     tool_calls[].index 是两套编号：正文若先占了 0，工具块必须从 1 开始。
+//   - lastDeltaLen 记录上一次已作为 input_json_delta 发出的字节数，用于只发增量。
+//
+// 字段说明刻意写在这里、而不是插在字段之间：插在字段之间的注释行会打断 gofmt
+// 的字段对齐分组（它会要求 index/id/name/args 按更窄的宽度重新对齐），
+// 让这个结构体一直不满足 gofmt。
 type toolAccumulator struct {
-	index   int
-	id      string
-	name    string
-	args    string
-	// started 表示 content_block_start 已发出；emitted 表示整块（含 stop）已完成。
-	// 两者分开：参数可能是分帧到达的，必须先把块打开、边收边发 delta。
-	started bool
-	emitted bool
-
-	// blockIndex 是本工具块在 Anthropic 内容数组里的下标，与 OpenAI 的
-	// tool_calls[].index 是两套编号：正文若先占了 0，工具块必须从 1 开始。
-	blockIndex int
-
-	// lastDeltaLen 记录上一次已经作为 input_json_delta 发出去的字节数，
-	// 用于只发增量部分。按字节比较前缀是安全的：JSON 参数总是逐段追加的。
+	index        int
+	id           string
+	name         string
+	args         string
+	started      bool
+	emitted      bool
+	blockIndex   int
 	lastDeltaLen int
 }
 
@@ -746,17 +865,58 @@ type anthropicReq struct {
 	Extra       map[string]any  `json:"-"`
 }
 
+// overrideContentCache 缓存 override.md 的内容，避免每个请求都重读磁盘并刷日志。
+//
+// 用「修改时间 + 大小」判断是否需要重新读取，所以运维改了文件（下一次写入之后）
+// 依然会被重新加载，不必重启进程。
+//
+// 已知局限：同一秒内、且改后长度恰好不变的编辑不会被察觉（mtime 粒度 1s）。
+// 这种编辑极少见，而且再改一次或重启即可生效；换来的是去掉每请求一次的磁盘读
+// 与每请求一行的日志。
+var (
+	overrideMu      sync.Mutex
+	overrideChecked bool
+	overrideMissing bool
+	overrideModTime time.Time
+	overrideSize    int64
+	overrideContent string
+)
+
 func loadOverrideContent() string {
-	data, err := os.ReadFile("override.md")
+	overrideMu.Lock()
+	defer overrideMu.Unlock()
+
+	fi, err := os.Stat("override.md")
 	if err != nil {
-		log.Printf("  override.md not found: %v", err)
+		// 没有 override.md 是最常见的配置（不覆盖系统提示词）。只提示一次，
+		// 否则每个请求都会打一行 "not found"，把日志彻底淹掉，还容易被误当异常。
+		if !overrideChecked || !overrideMissing {
+			log.Printf("  override.md not present: system prompt will come from the client request")
+		}
+		overrideChecked, overrideMissing = true, true
+		overrideContent, overrideModTime, overrideSize = "", time.Time{}, 0
+		return ""
+	}
+
+	if overrideChecked && !overrideMissing && fi.ModTime().Equal(overrideModTime) && fi.Size() == overrideSize {
+		return overrideContent // 没变，直接用缓存
+	}
+
+	data, rerr := os.ReadFile("override.md")
+	if rerr != nil {
+		log.Printf("  failed to read override.md: %v", rerr)
 		return ""
 	}
 	content := strings.TrimSpace(string(data))
-	if content != "" {
-		log.Printf("  using override.md as system prompt (%d bytes)", len(content))
+
+	overrideChecked, overrideMissing = true, false
+	overrideModTime, overrideSize, overrideContent = fi.ModTime(), fi.Size(), content
+
+	// 只在内容真正发生变化时打日志（进程启动后第一次读取也算一次变化）。
+	if content == "" {
+		log.Printf("  override.md is empty: system prompt will come from the client request")
 	} else {
-		log.Printf("  override.md is empty")
+		log.Printf("  override.md loaded, overriding the system prompt (%d bytes)", len(content))
 	}
 	return content
 }
@@ -842,7 +1002,9 @@ func anthropicToOpenAI(req anthropicReq) map[string]any {
 		sysContent = extractStringContent(req.System)
 	}
 	if sysContent != "" {
-		log.Printf("  system prompt: %d bytes (from override.md)", len(sysContent))
+		// 这里刻意不再每请求打一行：sysContent 可能来自 override.md，也可能来自
+		// 请求自带的 system 字段，之前那行 "(from override.md)" 在后者情况下是错的。
+		// override.md 的加载/变化已经由 loadOverrideContent 记一次日志。
 		msgs = append(msgs, map[string]any{"role": "system", "content": sysContent})
 	}
 
@@ -1000,10 +1162,12 @@ func openAIToAnthropic(openAI map[string]any) map[string]any {
 }
 
 func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
+	// 同 OpenAI 端点：这个端口对外发布且可能无鉴权，必须限制请求体大小。
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": map[string]string{"message": err.Error(), "type": "parse_error"},
+		writeJSON(w, bodyTooLargeStatus(err), map[string]any{
+			"error": map[string]string{"message": err.Error(), "type": "request_too_large"},
 		})
 		return
 	}
@@ -1044,7 +1208,7 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := callClineAPI(openAIReq, req.Stream)
+	resp, err := callClineAPI(r.Context(), openAIReq, req.Stream)
 	if err != nil {
 		log.Printf("  anthropic api error: %v", err)
 		// 与 OpenAI 端点一致：按上游语义回状态码，不一律压成 500。
@@ -1184,9 +1348,26 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 
 	reader := bufio.NewReader(upstream.Body)
 
+	// streamFailed 记录「流是被中断的」。中断后绝不能再走正常收尾：那会发
+	// stop_reason=end_turn，把一次被截断的响应伪装成模型主动结束。
+	streamFailed := false
+
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := readSSELine(reader)
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				// 上游中途断开（连接重置、单行超长等）：按 Anthropic 的约定发
+				// error 事件告知客户端，然后结束整个流。
+				log.Printf("  anthropic stream: upstream read error: %v", err)
+				emit("error", map[string]any{
+					"type": "error",
+					"error": map[string]string{
+						"type":    "upstream_error",
+						"message": "upstream stream failed: " + err.Error(),
+					},
+				})
+				streamFailed = true
+			}
 			break
 		}
 		line = strings.TrimRight(line, "\r\n")
@@ -1214,6 +1395,9 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 			errBody, _ := json.Marshal(errPayload)
 			log.Printf("  upstream SSE error: %s", string(errBody))
 			emit("error", map[string]any{"type": "error", "error": errPayload})
+			// 上游明确报错也算中断：不能再补 end_turn 收尾（旧实现会在发完
+			// error 事件后又补一套「正常结束」的事件，自相矛盾）。
+			streamFailed = true
 			break
 		}
 
@@ -1311,8 +1495,16 @@ func handleAnthropicStream(w http.ResponseWriter, upstream *http.Response) {
 			}
 		}
 	}
-
-	// Stop text block if active
+	// 流被中断：error 事件已经发过了，这里直接结束。
+	//
+	// 刻意不走下面的正常收尾——那些事件（content_block_stop / message_delta 带
+	// stop_reason=end_turn / message_stop）会向客户端宣布「这次回答是完整结束的」，
+	// 而实际上正文或工具参数可能已被截断。按 Anthropic 的约定，error 事件之后
+	// 流就结束了（客户端读到 EOF，SDK 会把它当错误抛出）。
+	if streamFailed {
+		log.Printf("  anthropic stream aborted: hasText=%v tools=%d", hasText, len(pendingTools))
+		return
+	}
 	if hasText {
 		emit("content_block_stop", map[string]any{
 			"type":  "content_block_stop",
@@ -1472,6 +1664,51 @@ func normalizeMessage(msg map[string]any) map[string]any {
 	return out
 }
 
+// freePort 在启动前腾出端口——但**只清理本代理自己的旧进程**。
+//
+// 旧实现在 Windows 上会强杀任何占用该端口的进程，这在端口被别的服务占用时等于
+// 替用户做决定、直接把对方进程连同未保存的数据一起干掉。端口被非本代理的程序
+// 占用时，正确做法是明确告诉用户去处理，而不是替他杀。
+//
+// 注意这里只实现了 Windows 版：其它平台上原先静默什么都不做，用户看到的是
+// ListenAndServe 报「address already in use」后进程退出，因此现在多给一句日志。
+func freePort(port int) {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return // port is free
+	}
+	conn.Close()
+
+	if runtime.GOOS != "windows" {
+		log.Printf("port %d is occupied by another process; free it and start again"+
+			" (this build only knows how to clear the port on Windows)", port)
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("port %d is occupied and our own executable path is unknown (%v); not touching it", port, err)
+		return
+	}
+
+	// 只对「可执行文件路径与自身相同」的进程下手；路径里的单引号按 PowerShell
+	// 的字面量规则翻倍转义。
+	quoted := strings.ReplaceAll(exe, "'", "''")
+	script := fmt.Sprintf(
+		`$c=Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue;`+
+			`foreach($x in $c){$p=Get-Process -Id $x.OwningProcess -ErrorAction SilentlyContinue;`+
+			`if($p -and $p.Path -eq '%s'){Stop-Process -Id $p.Id -Force}}`, port, quoted)
+	_ = execCommand("powershell", "-Command", script).Run()
+	time.Sleep(500 * time.Millisecond)
+
+	// 再探一次：如果还占着，说明不是我们自己的进程。
+	if c, err := net.DialTimeout("tcp", addr, 2*time.Second); err == nil {
+		c.Close()
+		log.Printf("port %d is still occupied by a process that is not this proxy;"+
+			" refusing to kill it — free the port manually or use -port", port)
+	}
+}
 func getNested(obj map[string]any, keys ...any) any {
 	current := any(obj)
 	for _, key := range keys {
@@ -1493,19 +1730,4 @@ func getNested(obj map[string]any, keys ...any) any {
 		}
 	}
 	return current
-}
-
-func freePort(port int) {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-	if err != nil {
-		return // port is free
-	}
-	conn.Close()
-
-	// Try to kill the process using the port
-	cmd := execCommand("powershell", "-Command",
-		fmt.Sprintf(`$p=Get-NetTCPConnection -LocalPort %d -ErrorAction SilentlyContinue; if($p){Stop-Process -Id $p.OwningProcess -Force}`, port))
-	_ = cmd.Run()
-	time.Sleep(500 * time.Millisecond)
 }

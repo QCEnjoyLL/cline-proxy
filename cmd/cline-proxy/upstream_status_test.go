@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -85,7 +86,7 @@ func TestCallClineAPIErrorCarriesUpstreamStatus(t *testing.T) {
 			t.Cleanup(cleanup)
 			addActiveTestAccount(t)
 
-			_, err := callClineAPI(map[string]any{
+			_, err := callClineAPI(context.Background(), map[string]any{
 				"model":    "cline-free/glm-5.2",
 				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 			}, false)
@@ -137,7 +138,7 @@ func TestCallClineAPINoAccountIsServiceUnavailable(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
 	})
 
-	_, err := callClineAPI(map[string]any{
+	_, err := callClineAPI(context.Background(), map[string]any{
 		"model":    "cline-free/glm-5.2",
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	}, false)
@@ -220,7 +221,7 @@ func TestCallClineAPIRetriesAfterTokenRefreshAndKeepsAccountActive(t *testing.T)
 		ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
 	})
 
-	resp, err := callClineAPI(map[string]any{
+	resp, err := callClineAPI(context.Background(), map[string]any{
 		"model":    "cline-free/glm-5.2",
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	}, false)

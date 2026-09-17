@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -62,7 +63,7 @@ func TestCallClineAPIRecordsFreeModelLimitFromUpstream(t *testing.T) {
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	}
 	start := time.Now()
-	if _, err := callClineAPI(params, false); err == nil {
+	if _, err := callClineAPI(context.Background(), params, false); err == nil {
 		t.Fatal("上游 429 应返回错误")
 	}
 
@@ -136,7 +137,7 @@ func TestCallClineAPIUnrecognized429UsesConfiguredTTL(t *testing.T) {
 		RefreshToken: "rt", AccessToken: "workos:a", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 	})
 
-	if _, err := callClineAPI(map[string]any{"model": "vendor/m", "messages": []any{}}, false); err == nil {
+	if _, err := callClineAPI(context.Background(), map[string]any{"model": "vendor/m", "messages": []any{}}, false); err == nil {
 		t.Fatal("应返回错误")
 	}
 
