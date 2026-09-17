@@ -678,7 +678,7 @@ html.theme-anim,html.theme-anim *{
     <div class="section-body">
       <p style="color:var(--text2);margin-bottom:12px">
         数据来自 <span class="mono">api.cline.bot/api/v1/ai/cline/models</span>，默认收起，展开后才抓取（400+ 条，服务端缓存 30 分钟）。
-        用法与上方分组一致：点击模型卡片单独添加，点击「全部添加」一键加入全部模型，重复的会自动跳过。
+        展开后按供应商（模型 ID 里 <span class="mono">/</span> 前那一段）分成若干组，每组都可以单独「全部添加」，也可以在顶部一次性添加全部；重复的会自动跳过。
       </p>
       <div id="catalogModels"><div class="empty">展开后加载…</div></div>
     </div>
@@ -1607,6 +1607,7 @@ let mAutoTimer = null;    // 自动刷新定时器
 // 上游这份清单有 400+ 条（约 500 KB），只在用户展开时才抓取，也不参与上面的 10 分钟自动刷新。
 const CATALOG_REFRESH_MS = 30 * 60 * 1000;  // 浏览器侧节流，对齐服务端的 30 分钟缓存
 let mCatalog = [];          // 最近一次取到的全部模型
+let mCatalogGroups = [];    // mCatalog 按供应商前缀分好的组（渲染与分组添加都用它）
 let mCatalogLoaded = false; // 是否已取到过数据（决定要不要跟着别处一起重渲染）
 let mCatalogFetchedAt = 0;  // 服务端数据的抓取时间（只用于展示「数据 X 前」）
 let mCatalogCheckedAt = 0;  // 上次向服务端取数的时间（本机时钟，节流用）
@@ -1760,6 +1761,7 @@ async function loadCatalog() {
   try {
     const d = await api('GET', '/model-catalog');
     mCatalog = d.data.models || [];
+    mCatalogGroups = groupCatalogModels(mCatalog);
     mCatalogFetchedAt = d.data.fetchedAt || 0;
     // 服务端一并算好了已启用清单，直接用：展开可能发生在 /models 返回之前，
     // 那时 mInstalled 还是空的，会把已启用的模型显示成「待添加」。
@@ -1785,7 +1787,28 @@ function onCatalogToggle() {
   loadCatalog();
 }
 
-// 渲染成与上方分组一致的形态：同一套分组头 + 同一套卡片。
+// 按模型 ID 的供应商前缀分组。
+//
+// 上游没有可用的供应商字段（model_provider / provider_human_id 实测都是空的），而 id 本身就是
+// vendor/model 形式，所以以前缀为准；~deepseek/xxx 这类别名与前缀归到同一组（前缀去 ~ 后使用）。
+// 组按模型数量从多到少排、组内按名称排，保证每次渲染顺序一致（上游的返回顺序不保证稳定）。
+function groupCatalogModels(models) {
+  const map = new Map();
+  models.forEach(m => {
+    const key = String(m.id || '').replace(/^~/, '').split('/')[0] || '其它';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(m);
+  });
+  const groups = [];
+  map.forEach((list, key) => {
+    list.sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+    groups.push({ key: key, models: list });
+  });
+  groups.sort((a, b) => b.models.length - a.models.length || a.key.localeCompare(b.key));
+  return groups;
+}
+
+// 渲染成与上方分组一致的形态：总览一行 + 每个供应商一组，卡片共用同一套。
 function renderCatalog() {
   const box = _('catalogModels');
   if (!box) return;
@@ -1795,11 +1818,13 @@ function renderCatalog() {
   }
   const installed = new Set(mInstalled);
   const pending = mCatalog.filter(m => !installed.has(m.id)).length;
-  box.innerHTML = '<div class="mgroup" data-key="__catalog__">' +
+
+  // 总览：整体计数与一次性添加全部；逐组添加在下面的各组标题右侧
+  let html = '<div class="mgroup" data-key="__catalog__">' +
     '<div class="mgroup-head">' +
-      '<span class="dot" style="background:var(--text2)"></span>' +
+      '<span class="dot" style="background:var(--accent)"></span>' +
       '<h3>全部模型</h3>' +
-      '<span class="gsub">（api/v1/ai/cline/models）</span>' +
+      '<span class="gsub">（按供应商分 ' + mCatalogGroups.length + ' 组）</span>' +
       '<span class="gcount">共 ' + mCatalog.length + ' 个' +
         (pending ? ' · 待添加 ' + pending : ' · 已全部添加') +
         ' · 数据 ' + relTime(mCatalogFetchedAt) + '</span>' +
@@ -1808,8 +1833,40 @@ function renderCatalog() {
         ' onclick="addCatalogAll()">' +
         (pending ? '<svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>全部添加 (' + pending + ')' : '<svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>已全部添加') + '</button>' +
     '</div>' +
-    '<div class="mcards">' + modelCardsHTML(mCatalog, installed) + '</div>' +
   '</div>';
+
+  html += mCatalogGroups.map(g => {
+    const groupPending = g.models.filter(m => !installed.has(m.id)).length;
+    return '<div class="mgroup" data-key="' + attr(g.key) + '">' +
+      '<div class="mgroup-head">' +
+        '<span class="dot" style="background:var(--text2)"></span>' +
+        '<h3>' + esc(g.key) + '</h3>' +
+        '<span class="gcount">共 ' + g.models.length + ' 个' +
+          (groupPending ? ' · 待添加 ' + groupPending : ' · 已全部添加') + '</span>' +
+        '<button class="btn btn-sm' + (groupPending ? ' btn-success' : '') + '"' +
+          (groupPending ? '' : ' disabled') +
+          ' onclick="addCatalogGroup(this)">' +
+          (groupPending ? '<svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>全部添加 (' + groupPending + ')' : '<svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>已全部添加') + '</button>' +
+      '</div>' +
+      '<div class="mcards">' + modelCardsHTML(g.models, installed) + '</div>' +
+    '</div>';
+  }).join('');
+
+  box.innerHTML = html;
+}
+
+// 一键添加某一个供应商分组的全部模型。
+//
+// 按钮内联只传 this，分组再由 DOM 里的 data-key 反查回来：这样 onclick 属性里不含任何
+// 动态值，就不必操心拼进属性时的 JS 字符串转义（web_test.go 有测试盯着这类内联内插）。
+function addCatalogGroup(btn) {
+  const head = btn && btn.closest ? btn.closest('.mgroup') : null;
+  const g = head ? mCatalogGroups.find(x => x.key === head.dataset.key) : null;
+  if (!g) return;
+  const installed = new Set(mInstalled);
+  const ids = g.models.map(m => m.id).filter(id => id && !installed.has(id));
+  if (!ids.length) { toast('该分组的模型已全部添加', 'info'); return; }
+  addModels(ids, g.key + ' 分组已添加');
 }
 
 // 一键添加全部模型（已存在的由服务端跳过）
