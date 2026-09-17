@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -197,9 +198,23 @@ func writePoolFile(data []byte) error {
 		}
 		os.Remove(tmp)
 		atomicReplaceUnsupportedFor = poolPath
-		log.Printf("Cannot atomically replace %s (%v); falling back to in-place writes."+
-			" This is expected when the file is a single-file bind mount,"+
-			" e.g. the docker-compose volume ./.cline-accounts.json:/app/.cline-accounts.json", poolPath, err)
+		// 这行只可能出现在「本进程第一次落盘」时：atomicReplaceUnsupportedFor
+		// 已置位，之后直接走原地写，不会反复刷屏（见
+		// TestBindMountFallbackLogsOnlyOnce）。
+		//
+		// 保留一行、不彻底静默：这是「原子替换未生效」的唯一线索，排查数据
+		// 完整性问题时需要它。但措辞要明确是预期情况、无需处理，别写成报错
+		// 的样子；同时也别断言原因一定是 bind mount——rename 失败也可能来自
+		// 文件被占用等其它原因，所以这里只说常见成因。
+		// 只取底层原因（EBUSY → "device or resource busy"）：os.Rename 返回的是
+		// *os.LinkError，它的 Error() 会把源/目标路径再拼一遍，而 poolPath 上面
+		// 已经打过了，重复的路径只会让这行更难读。
+		reason := err
+		if inner := errors.Unwrap(err); inner != nil {
+			reason = inner
+		}
+		log.Printf("accounts file %s: atomic replace unavailable (%v); using in-place writes for this process."+
+			" Normal for a single-file bind mount (docker-compose); no action needed.", poolPath, reason)
 	}
 
 	// 原地写：saveMu 保证本进程内不会有两个写入者。

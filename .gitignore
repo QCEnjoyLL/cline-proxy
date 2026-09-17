@@ -4,3 +4,6 @@ cline-proxy.exe~
 data/
 .cline-accounts.json
 .cline-credentials.json
+# -capture 调试工具的输出目录：里面是明文凭据（Authorization 头、access/
+# refresh token、响应体），绝不能进仓库。
+capture-logs/

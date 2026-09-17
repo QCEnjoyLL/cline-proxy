@@ -162,10 +162,12 @@ func captureRequest(name, method, rawURL, reqBody string, headers map[string]str
 var allEntries []*CaptureEntry
 
 func saveCaptureEntry(entry *CaptureEntry) {
-	os.MkdirAll(captureLogDir, 0755)
+	// 0700/0600：这里落盘的是明文凭据（Authorization 头、access/refresh token、
+	// 上游响应体），不能像普通调试日志那样用 0755/0644 让同机其它用户读到。
+	os.MkdirAll(captureLogDir, 0700)
 	filename := filepath.Join(captureLogDir, fmt.Sprintf("step-%02d-%s.json", entry.Step, sanitizeFilename(entry.Name)))
 	data, _ := json.MarshalIndent(entry, "", "  ")
-	os.WriteFile(filename, data, 0644)
+	os.WriteFile(filename, data, 0600)
 
 	// Also append to full log
 	fullLog := filepath.Join(captureLogDir, "full-capture.json")
@@ -178,7 +180,7 @@ func saveCaptureEntry(entry *CaptureEntry) {
 	}
 	entries = append(entries, entry)
 	finalData, _ := json.MarshalIndent(entries, "", "  ")
-	os.WriteFile(fullLog, finalData, 0644)
+	os.WriteFile(fullLog, finalData, 0600)
 }
 
 func sanitizeFilename(s string) string {
@@ -201,7 +203,7 @@ func doFullCapture() error {
 	fmt.Printf("  日志目录: %s\n", captureLogDir)
 	fmt.Println("")
 
-	os.MkdirAll(captureLogDir, 0755)
+	os.MkdirAll(captureLogDir, 0700)
 	captureIndex = 0
 
 	// ================================================================

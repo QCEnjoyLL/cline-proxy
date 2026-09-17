@@ -4,6 +4,8 @@
 cline-proxy.exe
 *.exe
 data/
+# -capture 调试工具的产出（含明文凭据）；旧的 .capture/ 是过时名字，一并保留兜底。
+capture-logs/
 .capture/
 .cline-accounts.json
 .cline-credentials.json

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -258,5 +261,45 @@ func TestInPlaceWriteTruncatesStaleTail(t *testing.T) {
 	}
 	if len(p.CustomModels) != 1 || p.CustomModels[0] != "a/one" {
 		t.Fatalf("落盘的 customModels = %v", p.CustomModels)
+	}
+}
+
+// 回退提示只能出现一次：它会在每次落盘时刷一行的话，代理运行期间日志会被淹没
+// （每次请求的用量落盘都会走 savePool）。
+//
+// 这条测试同时锁住两件事：
+//  1. 提示只出现一次（atomicReplaceUnsupportedFor 生效）；
+//  2. 第二次之后的落盘仍然成功（没有因为跳过 rename 而写不进去）。
+func TestBindMountFallbackLogsOnlyOnce(t *testing.T) {
+	useTemporaryPool(t)
+
+	originalRename := renameFile
+	renameFile = func(_, _ string) error { return syscall.EBUSY }
+
+	// 全局 logger 与全局 renameFile 都要还原，否则会污染其它测试。
+	originalOut := log.Writer()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() {
+		log.SetOutput(originalOut)
+		renameFile = originalRename
+		atomicReplaceUnsupportedFor = ""
+	})
+
+	// 模拟「运行中的多次落盘」。
+	const saves = 4
+	for i := 0; i < saves; i++ {
+		if err := savePool(); err != nil {
+			t.Fatalf("第 %d 次落盘失败: %v", i+1, err)
+		}
+	}
+
+	got := strings.Count(buf.String(), "using in-place writes")
+	if got != 1 {
+		t.Errorf("回退提示出现 %d 次，应恰好 1 次；日志内容：%q", got, buf.String())
+	}
+	// 措辞必须让人知道无需处理，否则会被当成故障。
+	if !strings.Contains(buf.String(), "no action needed") {
+		t.Errorf("回退提示应说明无需处理，实际：%q", buf.String())
 	}
 }

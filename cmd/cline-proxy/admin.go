@@ -233,6 +233,40 @@ type oauthSessionState struct {
 	Error      string
 }
 
+// oauthSessionTTL 是 OAuth 会话在内存里保留的时长。
+//
+// 为什么需要它：oauthSessions 只在 handleOAuthStart 里插入、此前从不删除，
+// 而每条 oauthSessionState 都带着 device code。反复点「开始 OAuth 登录」会让
+// 这个 map 单调增长（每条还对应一个最多存活约 5 分钟的后台 goroutine）。
+// 设备码流程本身约 5 分钟过期，前端也在 Done 之后停止轮询，所以 15 分钟足够
+// 覆盖「最后一次状态查询」，更久的记录可以安全丢弃。
+const oauthSessionTTL = 15 * time.Minute
+
+// pruneOAuthSessionsLocked 清掉已过期的 OAuth 会话，返回清理条数。
+// 调用方必须已持有 oauthSessionsMu。CreatedAt 为零值的记录（理论上不该出现）
+// 也一并清掉，避免它们永远留下。
+func pruneOAuthSessionsLocked(now time.Time) int {
+	removed := 0
+	for id, st := range oauthSessions {
+		if st == nil || st.CreatedAt.IsZero() || now.Sub(st.CreatedAt) > oauthSessionTTL {
+			delete(oauthSessions, id)
+			removed++
+		}
+	}
+	return removed
+}
+
+// registerOAuthSession 登记一个新的 OAuth 会话，并顺手清掉过期的。
+//
+// 把「登记」和「清理」收在一处：这个 map 没有别的地方会删除条目，所以清理
+// 必须挂在唯一的写入口上，否则会随「点击开始 OAuth 登录」的次数单调增长。
+func registerOAuthSession(id string, state *oauthSessionState) {
+	oauthSessionsMu.Lock()
+	defer oauthSessionsMu.Unlock()
+	pruneOAuthSessionsLocked(time.Now())
+	oauthSessions[id] = state
+}
+
 type apiResponse struct {
 	Success bool        `json:"success"`
 	Data    any         `json:"data,omitempty"`
@@ -473,9 +507,7 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  time.Now(),
 	}
 
-	oauthSessionsMu.Lock()
-	oauthSessions[sessionID] = state
-	oauthSessionsMu.Unlock()
+	registerOAuthSession(sessionID, state)
 
 	// Start polling in background
 	go func() {
@@ -552,6 +584,16 @@ func handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
 
 	oauthSessionsMu.Lock()
 	state, ok := oauthSessions[sessionID]
+	// 必须在锁内把字段拷出来：state 的这些字段由后台 goroutine 在
+	// oauthSessionsMu 保护下改写（见 handleOAuthStart），之前只把指针取到锁外、
+	// 再在锁外读 state.Done/Email，是数据竞争——string 是两个机器字，极端调度
+	// 下可能读到「指针是新值、长度是旧值」的撕裂值。
+	var done, success bool
+	var email, stateErr string
+	if ok {
+		done, success = state.Done, state.Success
+		email, stateErr = state.Email, state.Error
+	}
 	oauthSessionsMu.Unlock()
 
 	if !ok {
@@ -560,13 +602,13 @@ func handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"done":    state.Done,
-		"success": state.Success,
+		"done":    done,
+		"success": success,
 	}
-	if state.Done {
-		resp["email"] = state.Email
-		if !state.Success {
-			resp["error"] = state.Error
+	if done {
+		resp["email"] = email
+		if !success {
+			resp["error"] = stateErr
 		}
 	}
 
