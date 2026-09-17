@@ -219,7 +219,15 @@ func startProxy(port int) error {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if activeCount == 0 && len(loadPool().Accounts) == 0 {
+		// stats 在池锁内一次取全。这里原先是 activeCount（startProxy 启动时算的
+		// 一次快照）配合锁外 len(loadPool().Accounts)——后者是锁外读 slice header，
+		// 会与 addAccount/removeAccount 在锁内的 append / 重建切片竞争（读 slice
+		// header 本身就是 data race，可能撕出非法指针）。
+		//
+		// 注：陈旧快照本身并不会把请求挡在门外——旧写法是 && 短路，账号非空时
+		// 第二个操作数已为 false，守卫不会触发。所以这是竞态修复，不是行为修复。
+		stats := snapshotAccountStats()
+		if stats.Active == 0 && stats.Total == 0 {
 			// 503 而不是 401：客户端的 API Key 是好的，是**我们**没有可用账号。
 			// 回 401 会让客户端以为自己的 Key 无效，跑去反复重新配置。
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -1023,15 +1031,9 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("  anthropic: model=%s stream=%v msgs=%d", req.Model, req.Stream, len(req.Messages))
 
-	activeCount := 0
-	p := loadPool()
-	for _, a := range p.Accounts {
-		if a.Status == "active" {
-			activeCount++
-		}
-	}
-
-	if activeCount == 0 && len(p.Accounts) == 0 {
+	// 同 OpenAI 端点：在池锁内一次取全，避免锁外读 slice header。
+	stats := snapshotAccountStats()
+	if stats.Active == 0 && stats.Total == 0 {
 		// 与 OpenAI 端点一致：客户端 Key 没问题，是我方没有可用账号，回 503。
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error": map[string]string{

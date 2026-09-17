@@ -449,6 +449,43 @@ func currentDateKey(now time.Time) string {
 	return now.Format("2006-01-02")
 }
 
+// accountStats 是在池锁内统计出来的账号概况。
+//
+// 存在的意义：调用方需要在**一次加锁**里同时拿到「活跃数」和「总数」。若分成
+// 多次 loadPool()/len(p.Accounts) 在锁外读，就会与并发的 addAccount /
+// removeAccount（它们在锁内 append / 重建切片，会换掉底层数组）竞争——读 slice
+// header 本身就是 data race，可能撕出一个非法指针。
+type accountStats struct {
+	Total  int
+	Active int
+}
+
+// snapshotAccountStats 在池锁内统计账号数。
+func snapshotAccountStats() accountStats {
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+
+	s := accountStats{Total: len(p.Accounts)}
+	for _, a := range p.Accounts {
+		if a != nil && a.Status == "active" {
+			s.Active++
+		}
+	}
+	return s
+}
+
+// accountCount 在池锁内读账号总数。
+//
+// 供「只要个数」的调用方使用：直接 len(loadPool().Accounts) 是锁外读 slice
+// header，会与锁内的 append / 重建切片竞争。
+func accountCount() int {
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	return len(p.Accounts)
+}
+
 // bumpAccountUsage counts one successful request. The daily counter resets
 // automatically when the stored date no longer matches the current local
 // date, while UsageCount keeps accumulating for the account's lifetime.

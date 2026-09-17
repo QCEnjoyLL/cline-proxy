@@ -301,13 +301,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.3.6` | 源码版本号（`cmd/cline-proxy/version.go`）。**每次提交都会随版本号自动更新** |
+| `1.3.7` | 源码版本号（`cmd/cline-proxy/version.go`）。**每次提交都会随版本号自动更新** |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.3.6   # 固定版本
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.3.7   # 固定版本
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

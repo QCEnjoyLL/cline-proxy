@@ -383,7 +383,8 @@ func handleAdminAccountAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Email == "" {
-		req.Email = fmt.Sprintf("user_%d", len(loadPool().Accounts)+1)
+		// 走 accountCount：锁外 len(loadPool().Accounts) 与 addAccount 竞争。
+		req.Email = fmt.Sprintf("user_%d", accountCount()+1)
 	}
 
 	acc := &Account{
@@ -1208,6 +1209,9 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 
 	p := loadPool()
 	poolMu.Lock()
+	// total 必须在锁内取：写响应时读 len(p.Accounts) 已经解锁，会与 addAccount /
+	// removeAccount 在锁内的 append / 重建切片竞争（读 slice header 即 data race）。
+	total := len(p.Accounts)
 	active, expired, disabled := 0, 0, 0
 	for _, a := range p.Accounts {
 		if a.Disabled {
@@ -1233,7 +1237,7 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, http.StatusOK, apiResponse{
 		Success: true,
 		Data: map[string]any{
-			"total":    len(p.Accounts),
+			"total":    total,
 			"active":   active,
 			"cooldown": cooling,
 			"expired":  expired,
