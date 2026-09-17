@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -25,6 +26,77 @@ const (
 	// 响应里常见工具数是几十个量级，300 足够宽松）。
 	maxPendingToolCalls = 300
 )
+
+// upstreamError 是一个带「该回给客户端什么状态码」的上游错误。
+//
+// 背景：旧实现把所有上游失败都压成 HTTP 500。客户端因此无法区分
+// 「上游限流（该退避后重试）」和「我的请求本身有问题（该改请求）」，
+// 只能一律重试——限流时反而加剧限流，也会让 429 这类本该由客户端
+// 处理的信号彻底消失。
+type upstreamError struct {
+	Status  int    // 回给客户端的 HTTP 状态码
+	Type    string // OpenAI 风格的 error.type
+	Message string
+}
+
+func (e *upstreamError) Error() string { return e.Message }
+
+func newUpstreamError(status int, errType, format string, args ...any) *upstreamError {
+	return &upstreamError{Status: status, Type: errType, Message: fmt.Sprintf(format, args...)}
+}
+
+// clientStatusForUpstream 决定把上游的状态码怎么转达给客户端。
+//
+// 规则与理由：
+//   - 2xx/3xx 不该走到这里；出现即视为上游异常，回 502。
+//   - 429 原样转达：让客户端知道「被限流了」，这是我们唯一不该自己吞掉的信号
+//     （账号池已经换过号了，仍然 429 说明整体都在限流）。
+//   - 401/403 转 502：这是**我们**的账号凭据失效，不是客户端的 API Key 有问题。
+//     若原样回 401，客户端会以为自己的 Key 无效而反复重配。
+//   - 其余 4xx 原样转达：这多半是客户端请求本身的问题（模型名、参数、
+//     上下文超长），客户端需要看到真实原因才知道改什么。
+//   - 5xx 转 502：上游故障是我们的问题，不该让客户端以为是他自己的错。
+func clientStatusForUpstream(upstreamStatus int) int {
+	switch {
+	case upstreamStatus == http.StatusTooManyRequests:
+		return http.StatusTooManyRequests
+	case upstreamStatus == http.StatusUnauthorized || upstreamStatus == http.StatusForbidden:
+		return http.StatusBadGateway
+	case upstreamStatus >= 400 && upstreamStatus < 500:
+		return upstreamStatus
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// writeUpstreamError 把 callClineAPI 的错误按语义回给客户端：
+// 带状态的用它的状态码，其余（网络错误、本地故障等）一律 502。
+func writeUpstreamError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	errType := "api_error"
+	var ue *upstreamError
+	if errors.As(err, &ue) {
+		status = ue.Status
+		if ue.Type != "" {
+			errType = ue.Type
+		}
+	}
+	// 状态码必须落在 100..999：net/http 的 WriteHeader 对越界值会直接 panic。
+	// 当前所有调用点都只给 >=400 的值，这里纯粹是防御——一个写错的状态码
+	// 不该把整个进程打挂。
+	if status < 100 || status > 999 {
+		log.Printf("  writeUpstreamError: invalid status %d, falling back to 502", status)
+		status = http.StatusBadGateway
+	}
+	// err 为 nil 时 err.Error() 会 panic；调用点都有守卫，这里同样只是兜底。
+	msg := "upstream error"
+	if err != nil {
+		msg = err.Error()
+	}
+	writeJSON(w, status, map[string]any{
+		"error": map[string]string{"message": msg, "type": errType},
+	})
+}
 
 var passThroughKeys = []string{
 	"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call",
@@ -148,10 +220,12 @@ func startProxy(port int) error {
 			return
 		}
 		if activeCount == 0 && len(loadPool().Accounts) == 0 {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{
+			// 503 而不是 401：客户端的 API Key 是好的，是**我们**没有可用账号。
+			// 回 401 会让客户端以为自己的 Key 无效，跑去反复重新配置。
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error": map[string]string{
 					"message": "No accounts in pool. Run with --add-account or POST /admin/login to add accounts.",
-					"type":    "auth_error",
+					"type":    "no_account",
 				},
 			})
 			return
@@ -205,9 +279,8 @@ func startProxy(port int) error {
 		resp, err := callClineAPI(params, isStream)
 		if err != nil {
 			log.Printf("  api error: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"error": map[string]string{"message": err.Error(), "type": "api_error"},
-			})
+			// 按上游语义回状态码（429 原样转达等），不再一律压成 500。
+			writeUpstreamError(w, err)
 			return
 		}
 		defer resp.Body.Close()
@@ -382,13 +455,19 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 	model := effectiveModel(params)
 	acc := pickAccount(model)
 	if acc == nil {
-		return nil, fmt.Errorf("no active accounts available. Use --login or admin API to add accounts")
+		// 503 而不是 500：池子暂时不可用，等待 + 重试是正确反应
+		// （填号/冷却恢复后即可用），不是请求本身有问题。
+		return nil, newUpstreamError(http.StatusServiceUnavailable, "no_account",
+			"no active accounts available. Use --login or admin API to add accounts")
 	}
 
 	token, err := ensureAccountToken(acc)
 	if err != nil {
-		// Try other accounts
-		return nil, fmt.Errorf("account %s token failed: %w", acc.Email, err)
+		// 我方账号凭据出了问题，不是客户端的错：给 502，别让他怀疑自己的 Key。
+		// 邮箱用 truncateEmail：这条 message 会经 writeUpstreamError 原样回给
+		// API 客户端，任何持有有效 Key 的调用者都能读，不该拿到完整账号邮箱。
+		return nil, newUpstreamError(http.StatusBadGateway, "account_error",
+			"account %s token failed: %v", truncateEmail(acc.Email), err)
 	}
 
 	body := buildUpstreamBody(params, stream)
@@ -419,7 +498,9 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 	if err != nil {
 		// 网络错误不代表账号额度问题：不冷却、不禁用，直接返回错误。
 		// 旧实现把网络抖动当成限流踢账号，一次断网就能下线整个账号池。
-		return nil, fmt.Errorf("upstream request: %w", err)
+		// 502：上游不可达是我们的链路问题，不是客户端请求写错了。
+		return nil, newUpstreamError(http.StatusBadGateway, "api_error",
+			"upstream request: %v", err)
 	}
 
 	if resp.StatusCode == 401 {
@@ -432,27 +513,30 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 			// 导致 token 刷新后仍然报错（旧实现在这里永远重试不成功）。
 			retryReq, rerr := http.NewRequest("POST", clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
 			if rerr != nil {
-				return nil, fmt.Errorf("rebuild retry request: %w", rerr)
+				return nil, newUpstreamError(http.StatusBadGateway, "api_error",
+					"rebuild retry request: %v", rerr)
 			}
 			retryReq.Header = clineHeaders(token, sessionID)
 			resp, err = httpClient.Do(retryReq)
 			if err != nil {
-				return nil, fmt.Errorf("upstream retry: %w", err)
+				return nil, newUpstreamError(http.StatusBadGateway, "api_error",
+					"upstream retry: %v", err)
 			}
+
 			if resp.StatusCode == 401 {
 				resp.Body.Close()
 				poolMu.Lock()
 				acc.Status = "expired"
 				poolMu.Unlock()
-				savePool()
-				return nil, fmt.Errorf("account %s token expired permanently", acc.Email)
+				return nil, newUpstreamError(http.StatusBadGateway, "account_error",
+					"account %s token expired permanently", truncateEmail(acc.Email))
 			}
 		} else {
 			poolMu.Lock()
 			acc.Status = "expired"
 			poolMu.Unlock()
-			savePool()
-			return nil, fmt.Errorf("account %s refresh failed: %w", acc.Email, err)
+			return nil, newUpstreamError(http.StatusBadGateway, "account_error",
+				"account %s refresh failed: %v", truncateEmail(acc.Email), err)
 		}
 	}
 
@@ -476,7 +560,8 @@ func callClineAPI(params map[string]any, stream bool) (*http.Response, error) {
 					truncateEmail(acc.Email), model, ttl.Round(time.Second))
 			}
 		}
-		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
+		return nil, newUpstreamError(clientStatusForUpstream(resp.StatusCode), "upstream_error",
+			"API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
 	}
 
 
@@ -583,7 +668,9 @@ func handleStreamResponse(w http.ResponseWriter, upstream *http.Response) {
 func handleNonStreamResponse(w http.ResponseWriter, upstream *http.Response) {
 	var raw map[string]any
 	if err := json.NewDecoder(upstream.Body).Decode(&raw); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
+		// 上游回了 200 但响应体不是合法 JSON：这是上游的问题，不是客户端的请求
+		// 有问题，所以是 502 而不是 500。
+		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]string{"message": err.Error(), "type": "parse_error"},
 		})
 		return
@@ -945,10 +1032,11 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if activeCount == 0 && len(p.Accounts) == 0 {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{
+		// 与 OpenAI 端点一致：客户端 Key 没问题，是我方没有可用账号，回 503。
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error": map[string]string{
 				"message": "No accounts in pool",
-				"type":    "auth_error",
+				"type":    "no_account",
 			},
 		})
 		return
@@ -957,9 +1045,8 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	resp, err := callClineAPI(openAIReq, req.Stream)
 	if err != nil {
 		log.Printf("  anthropic api error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": map[string]string{"message": err.Error(), "type": "api_error"},
-		})
+		// 与 OpenAI 端点一致：按上游语义回状态码，不一律压成 500。
+		writeUpstreamError(w, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -969,7 +1056,8 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	} else {
 		var raw map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
+			// 同 handleNonStreamResponse：上游响应体非法是上游问题，回 502。
+			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": map[string]string{"message": err.Error(), "type": "parse_error"},
 			})
 			return
