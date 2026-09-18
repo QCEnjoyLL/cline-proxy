@@ -279,6 +279,37 @@ tbody tr:last-child td{border-bottom:0}
 }
 .btn-sm{padding:5px 11px;font-size:12px;border-radius:6px}
 
+.catalog-search .search-box{
+  display:flex;align-items:center;gap:7px;flex:1 1 200px;min-width:0;max-width:420px;
+  padding:0 11px;background:var(--surface-solid);
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  transition:border-color var(--t-press) var(--ease-out),box-shadow var(--t-press) var(--ease-out);
+}
+  transition:border-color var(--t-press) var(--ease-out),box-shadow var(--t-press) var(--ease-out);
+}
+.catalog-search .search-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3.5px var(--accent-soft)}
+.catalog-search .search-box svg{width:15px;height:15px;flex:none;color:var(--text2)}
+/* 全局 input 规则是 width:100% + 自己的边框，这里必须显式覆盖，否则输入框会撑破外框 */
+.catalog-search .search-box input{width:100%;border:0;background:none;box-shadow:none;padding:8px 0;font-size:13px}
+.catalog-search .search-box input:focus{outline:none;border:0;box-shadow:none}
+.catalog-search .search-count{font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums}
+
+/* ===== 回到顶部：右下角悬浮 ===== */
+/* position:fixed 的元素不能待在 display:none 的祖先里（见页面底部那条注释），
+   所以它挂在 .layout 之外，靠 body 上的 show-to-top 类控制显隐。 */
+.to-top{
+  position:fixed;right:26px;bottom:26px;z-index:900;
+  width:42px;height:42px;padding:0;border-radius:50%;
+  opacity:0;transform:translateY(8px) scale(.96);pointer-events:none;
+  transition:opacity var(--t-base) var(--ease-out),transform var(--t-base) var(--ease-out),
+             background var(--t-press) var(--ease-out),border-color var(--t-press) var(--ease-out),
+             box-shadow var(--t-press) var(--ease-out);
+}
+body.show-to-top .to-top{opacity:1;transform:none;pointer-events:auto}
+body.show-to-top .to-top:active{transform:scale(.94)}
+.to-top svg{width:17px;height:17px}
+@media (prefers-reduced-motion:reduce){.to-top{transition:opacity var(--t-press) linear}}
+
 input,textarea,select{
   width:100%;padding:9px 12px;background:var(--surface-solid);
   border:1px solid var(--border-strong);border-radius:var(--radius-sm);
@@ -578,6 +609,10 @@ html.theme-anim,html.theme-anim *{
 <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
 <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
 <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v2.3M12 20.2v2.3M1.5 12h2.3M20.2 12h2.3M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M19.4 4.6l-1.6 1.6M6.2 17.8l-1.6 1.6"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20 16 16"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+<symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+<symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></symbol>
 <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
 </defs></svg>
 <div class="layout">
@@ -680,6 +715,14 @@ html.theme-anim,html.theme-anim *{
         数据来自 <span class="mono">api.cline.bot/api/v1/ai/cline/models</span>，默认收起，展开后才抓取（400+ 条，服务端缓存 30 分钟）。
         展开后按供应商（模型 ID 里 <span class="mono">/</span> 前那一段）分成若干组，每组标题右侧都有「全部添加」，点哪组加哪组；重复的会自动跳过。
       </p>
+      <div class="catalog-search">
+        <div class="search-box">
+          <svg aria-hidden="true"><use href="#i-search"/></svg>
+          <input type="search" id="catalogSearch" placeholder="搜索模型名称或 ID（如 gpt、qwen、flash）"
+                 autocomplete="off" spellcheck="false" aria-label="搜索全部模型">
+        </div>
+        <span class="search-count" id="catalogSearchCount"></span>
+      </div>
       <div id="catalogModels"><div class="empty">展开后加载…</div></div>
     </div>
   </details>
@@ -912,6 +955,14 @@ html.theme-anim,html.theme-anim *{
 </div>
 
 <div id="toast" class="toast"></div>
+
+<!-- 回到顶部。同样必须放在 .layout 之外：position:fixed 若处在
+     display:none 的祖先（未激活的 tab 面板）下就不会被渲染。
+     显隐由 body 上的 show-to-top 类控制（见 .to-top 的 CSS）。 -->
+<button class="btn to-top" id="toTopBtn" type="button" onclick="scrollToTop()"
+        title="回到顶部" aria-label="回到顶部">
+  <svg aria-hidden="true"><use href="#i-up"/></svg>
+</button>
 
 <script>
 const API = '/admin/api';
@@ -1608,6 +1659,7 @@ let mAutoTimer = null;    // 自动刷新定时器
 const CATALOG_REFRESH_MS = 30 * 60 * 1000;  // 浏览器侧节流，对齐服务端的 30 分钟缓存
 let mCatalog = [];          // 最近一次取到的全部模型
 let mCatalogGroups = [];    // mCatalog 按供应商前缀分好的组（渲染与分组添加都用它）
+let mCatalogQuery = '';     // 全部模型的搜索词（空串=不过滤）
 let mCatalogLoaded = false; // 是否已取到过数据（决定要不要跟着别处一起重渲染）
 let mCatalogFetchedAt = 0;  // 服务端数据的抓取时间（只用于展示「数据 X 前」）
 let mCatalogCheckedAt = 0;  // 上次向服务端取数的时间（本机时钟，节流用）
@@ -1817,6 +1869,25 @@ function groupCatalogModels(models) {
   return groups;
 }
 
+// 按搜索词过滤全部模型：同时匹配名称与 ID（ID 里含供应商前缀，所以搜 "qwen" 能命中整个分组）。
+// 统一小写比较，输入两端空白忽略。
+function filterCatalogModels(models, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return models;
+  return models.filter(m => {
+    const name = String(m.name || '').toLowerCase();
+    const id = String(m.id || '').toLowerCase();
+    return name.indexOf(q) >= 0 || id.indexOf(q) >= 0;
+  });
+}
+
+// 搜索框事件：只重渲染折叠区，不打任何接口（数据已经在内存里）。
+// 输入时立刻过滤——过滤只过一遍 400+ 条，没必要加防抖。
+function onCatalogSearch(value) {
+  mCatalogQuery = value || '';
+  renderCatalog();
+}
+
 // 渲染成与上方分组一致的形态：总览一行 + 每个供应商一组，卡片共用同一套。
 function renderCatalog() {
   const box = _('catalogModels');
@@ -1826,7 +1897,21 @@ function renderCatalog() {
     return;
   }
   const installed = new Set(mInstalled);
-  const pending = mCatalog.filter(m => !installed.has(m.id)).length;
+
+  // 搜索只作用于这个折叠区（上面的推荐分组数量不多，不需要）。
+  // 过滤结果同时喂给分组与总览计数，保证两者始终自洽；分组对过滤后的列表重新分一次组，
+  // 空掉的供应商不会留下一个空壳标题。
+  const q = mCatalogQuery.trim();
+  const matched = filterCatalogModels(mCatalog, q);
+  const groups = q ? groupCatalogModels(matched) : mCatalogGroups;
+  const pending = matched.filter(m => !installed.has(m.id)).length;
+
+  const countEl = _('catalogSearchCount');
+  if (countEl) {
+    if (!q) countEl.textContent = '';
+    else if (!matched.length) countEl.textContent = '没有匹配「' + q + '」的模型';
+    else countEl.textContent = '匹配 ' + matched.length + ' 个 · 分 ' + groups.length + ' 组';
+  }
 
   // 总览行只做统计，刻意不放「全部添加」：一次提交 400+ 个 ID 会让服务端逐个落盘，
   // 按供应商分组添加更可控。逐组添加的按钮在下面各组标题右侧。
@@ -1834,14 +1919,20 @@ function renderCatalog() {
     '<div class="mgroup-head">' +
       '<span class="dot" style="background:var(--accent)"></span>' +
       '<h3>全部模型</h3>' +
-      '<span class="gsub">（按供应商分 ' + mCatalogGroups.length + ' 组）</span>' +
-      '<span class="gcount">共 ' + mCatalog.length + ' 个' +
+      '<span class="gsub">（' + (q ? '筛选出 ' + matched.length + ' 个，' : '') +
+        '按供应商分 ' + groups.length + ' 组）</span>' +
+      '<span class="gcount">共 ' + (q ? matched.length : mCatalog.length) + ' 个' +
         (pending ? ' · 待添加 ' + pending : ' · 已全部添加') +
         ' · 数据 ' + relTime(mCatalogFetchedAt) + '</span>' +
     '</div>' +
   '</div>';
 
-  html += mCatalogGroups.map(g => {
+  if (q && !matched.length) {
+    box.innerHTML = html + '<div class="empty">没有匹配「' + esc(q) + '」的模型，换个词试试</div>';
+    return;
+  }
+
+  html += groups.map(g => {
     const groupPending = g.models.filter(m => !installed.has(m.id)).length;
     return '<div class="mgroup" data-key="' + attr(g.key) + '">' +
       '<div class="mgroup-head">' +
@@ -1874,6 +1965,46 @@ function addCatalogGroup(btn) {
   if (!ids.length) { toast('该分组的模型已全部添加', 'info'); return; }
   addModels(ids, g.key + ' 分组已添加');
 }
+
+// ===== 回到顶部 =====
+//
+// 滚动容器不是 .main，而是文档本身：.layout 用的是 min-height:100vh，内容变长时
+// 整个 .layout（以及 .main）跟着长高，.main 的 scrollHeight 永远等于 clientHeight，
+// 它的 overflow-y:auto 实际不滚动。所以必须监听 window、也滚 window——
+// 早先按「滚动 .main」写，结果是按钮既不出现、点了也没反应。别再改回去。
+const toTopThreshold = 400;
+
+// 读当前纵向偏移。优先 window.scrollY；个别环境下文档由 documentElement 滚动，
+// 取两者的最大值兜底（正常页面二者一致）。
+function currentScrollY() {
+  const winY = window.scrollY || window.pageYOffset || 0;
+  const docY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+  return Math.max(winY, docY);
+}
+
+function scrollToTop() {
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // 平滑滚动交给浏览器；没实现 window.scrollTo 的环境（老浏览器、内嵌 webview）
+  // 直接把两个可滚动根一起归零。异常也走同一条兜底，保证「点了就一定回顶部」。
+  if (typeof window.scrollTo === 'function') {
+    try {
+      window.scrollTo({ top: 0, left: 0, behavior: reduce ? 'auto' : 'smooth' });
+      return;
+    } catch (e) { /* 落到下面 */ }
+  }
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+  document.body.classList.remove('show-to-top');
+}
+
+// 显隐交给 body 上的类，避免每次滚动都直接改元素样式。
+function initBackToTop() {
+  const sync = () => document.body.classList.toggle('show-to-top', currentScrollY() > toTopThreshold);
+  window.addEventListener('scroll', sync, { passive: true });
+  document.addEventListener('scroll', sync, { passive: true, capture: true });
+  sync();
+}
+initBackToTop();
 
 // 统一走批量接口；服务端对已存在的 ID 返回 skipped，不会重复添加。
 async function addModels(ids, okMsg) {
@@ -1927,6 +2058,15 @@ _('recommendedGroups').addEventListener('keydown', onModelCardKey);
 // 底部折叠区复用同一套卡片交互
 _('catalogModels').addEventListener('click', onModelCardClick);
 _('catalogModels').addEventListener('keydown', onModelCardKey);
+
+// 全部模型的搜索：只过滤本地已有数据，不发请求。
+// 绑定 input（覆盖键盘、粘贴、以及 type=search 自带的清除按钮——清除不一定触发 input，
+// 所以再补一个 search 事件）与 Esc 清空。
+_('catalogSearch').addEventListener('input', e => onCatalogSearch(e.target.value));
+_('catalogSearch').addEventListener('search', e => onCatalogSearch(e.target.value));
+_('catalogSearch').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.target.value = ''; onCatalogSearch(''); }
+});
 
 // ========== 配置加载 ==========
 async function loadConfig() {
