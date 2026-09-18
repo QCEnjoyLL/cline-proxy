@@ -222,15 +222,25 @@ func handleAdminRecommendedModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxBatchModelIDs 限制单次批量添加的条数。
+// 上游「全部模型」清单目前 444 条，这里是它的两倍多，既容得下正常用法，也挡住异常的巨大数组。
+const maxBatchModelIDs = 1000
+
 // POST /admin/api/models/batch
 //
-// 请求体 {"ids":["a","b"]}，逐个加入自定义模型。
+// 请求体 {"ids":["a","b"]}，加入自定义模型。
 // 已存在的 ID 计入 skipped 而不是报错，因此可安全地整组重复点击。
+//
+// 整批一次落盘（addCustomModels），不逐个写盘：面板的「全部添加」一个分组可能有近百个
+// 模型，逐个 addCustomModel 就等于在池锁里做上百次整池写盘，期间所有代理请求都会被挡住。
 func handleAdminModelsBatchAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
 	}
+
+	// 面板一次最多提交一个完整清单（目前上游 444 条），留足余量但挡住异常的巨大请求体。
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var req struct {
 		IDs []string `json:"ids"`
@@ -243,23 +253,14 @@ func handleAdminModelsBatchAdd(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "ids is required"})
 		return
 	}
-
-	added := make([]string, 0, len(req.IDs))
-	skipped := make([]string, 0, len(req.IDs))
-	failed := make(map[string]string)
-
-	for _, id := range req.IDs {
-		if _, err := addCustomModel(id); err != nil {
-			if errors.Is(err, errModelExists) {
-				skipped = append(skipped, id)
-				continue
-			}
-			failed[id] = err.Error()
-			continue
-		}
-		added = append(added, id)
+	if len(req.IDs) > maxBatchModelIDs {
+		writeAPI(w, http.StatusBadRequest, apiResponse{
+			Error: fmt.Sprintf("too many ids: %d (max %d)", len(req.IDs), maxBatchModelIDs),
+		})
+		return
 	}
 
+	added, skipped, failed := addCustomModels(req.IDs)
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
 		"added":   added,
 		"skipped": skipped,

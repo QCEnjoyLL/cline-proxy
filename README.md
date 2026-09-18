@@ -208,7 +208,7 @@ docker compose logs --tail=100
 - **不会重复添加**：已存在的模型会跳过，并提示「已存在 N 个」；整组已添加完时按钮自动禁用
 - **手动/自动刷新**：右上角「刷新数据」强制回源；停留在该标签页时每 10 分钟自动刷新一次
 - **描述保持上游原文**：模型描述不做翻译，直接显示 `api.cline.bot` 返回的原文，上游新增模型时不会出现中英混排
-- **全部模型（默认折叠）**：列表底部还有一个默认收起的折叠区块，展示 `api/v1/ai/cline/models` 的全部模型（目前 444 条）。展开后按供应商（模型 ID 里 `/` 前那一段）分成若干组，每组可单独「全部添加」。卡片格式与交互和上方分组完全一致，只是展开时才向服务端取数
+- **全部模型（默认折叠）**：列表底部还有一个默认收起的折叠区块，展示 `api/v1/ai/cline/models` 的全部模型（目前 400+ 条）。展开后按供应商（模型 ID 里 `/` 前那一段）分成若干组，每组可单独「全部添加」。卡片格式与交互和上方分组完全一致，只是展开时才向服务端取数
 
 > 📌 该接口只对 Cline 自家域名放行 CORS，浏览器无法直接读取，因此由代理在服务端抓取后转发。服务端带 30 分钟缓存；上游暂时不可用时会继续显示上次数据并提示原因。
 
@@ -218,7 +218,7 @@ docker compose logs --tail=100
 |---|---|---|
 | `GET` | `/admin/api/recommended-models` | 获取分组模型清单；加 `?refresh=1` 强制回源 |
 | `GET` | `/admin/api/model-catalog` | 获取「全部模型」清单（400+ 条）；加 `?refresh=1` 强制回源。面板默认折叠，展开时才调用 |
-| `POST` | `/admin/api/models/batch` | 批量添加模型，body `{"ids":["a","b"]}`；已存在的计入 `skipped` |
+| `POST` | `/admin/api/models/batch` | 批量添加模型，body `{"ids":["a","b"]}`；已存在的计入 `skipped`。整批只落盘一次，单次最多 1000 条 |
 
 内置模型：
 
@@ -304,13 +304,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.4.2` | 源码版本号（`cmd/cline-proxy/version.go`）。**每次提交都会随版本号自动更新** |
+| `1.5.0` | 源码版本号（`cmd/cline-proxy/version.go`）。**每次提交都会随版本号自动更新** |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.4.2   # 固定版本
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.5.0   # 固定版本
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

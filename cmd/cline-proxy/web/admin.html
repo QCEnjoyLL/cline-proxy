@@ -1640,6 +1640,8 @@ async function loadRecommended(force) {
     mInstalled = d.data.installed || [];
     mFetchedAt = d.data.fetchedAt || 0;
     renderRecommended();
+    // 折叠区的「已启用」标记同样依赖 mInstalled，一并刷新，免得两个区块互相矛盾
+    if (mCatalogLoaded) renderCatalog();
     if (force) toast('模型数据已刷新', 'success');
     if (d.data.stale && d.error) {
       toast('上游抓取失败，显示上次缓存: ' + d.error, 'error');
@@ -1760,7 +1762,9 @@ async function loadCatalog() {
   if (!mCatalog.length) box.innerHTML = '<div class="empty">正在抓取…</div>';
   try {
     const d = await api('GET', '/model-catalog');
-    mCatalog = d.data.models || [];
+    // 丢弃没有 id 的条目：这样「共 N 个」、各分组卡片数之和、以及各组/总览的「待添加 N」
+    // 与真正提交的 id 集合完全一致。否则会出现「按钮显示待添加 1，点下去说已全部添加」。
+    mCatalog = (d.data.models || []).filter(m => m && m.id);
     mCatalogGroups = groupCatalogModels(mCatalog);
     mCatalogFetchedAt = d.data.fetchedAt || 0;
     // 服务端一并算好了已启用清单，直接用：展开可能发生在 /models 返回之前，
@@ -1783,7 +1787,12 @@ function onCatalogToggle() {
   // 30 分钟内不重复问服务端（它的缓存在这段时间里也只会返回同一份数据）。
   // 判据必须是「上次取数的时间」而不是服务端数据的年龄：上游故障退回过期缓存时，
   // 数据年龄永远是旧的，拿它判断会导致每次展开都重新打一次上游。
-  if (Date.now() - mCatalogCheckedAt < CATALOG_REFRESH_MS) { renderCatalog(); return; }
+  if (Date.now() - mCatalogCheckedAt < CATALOG_REFRESH_MS) {
+    // 节流窗口内不再取数，但也不能用「暂无数据」盖掉失败提示或「正在抓取…」：
+    // 只有真的取到过数据才重渲染。
+    if (mCatalogLoaded) renderCatalog();
+    return;
+  }
   loadCatalog();
 }
 

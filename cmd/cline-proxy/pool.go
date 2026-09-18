@@ -261,8 +261,18 @@ func savePool() error {
 	return writePoolFile(data)
 }
 
+// 落盘次数计数，只给测试用。批量添加的承诺是「整批一次落盘」，
+// 而落盘发生在持有 poolMu 期间（pickAccount 也要这把锁），所以这条不变量值得钉住。
+var (
+	poolSaveCount       atomic.Int64
+	countSavePoolLocked bool
+)
+
 // savePoolLocked 供已经持有 poolMu 的调用点使用（pickAccount、models.go 的写操作等）。
 func savePoolLocked() error {
+	if countSavePoolLocked {
+		poolSaveCount.Add(1)
+	}
 	data, err := marshalPool()
 	if err != nil {
 		return err

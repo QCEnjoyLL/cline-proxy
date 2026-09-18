@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -235,6 +237,176 @@ func TestAdminModelsBatchAddRejectsBadRequests(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+// 批量添加的核心承诺：整批只落盘一次。
+//
+// 这条不是锦上添花——原先逐个调用 addCustomModel 时，一个 96 个模型的分组会在持有 poolMu
+// 期间做 96 次整池写盘，而 pickAccount（每个代理请求都走）也要这把锁。测试通过统计
+// savePoolLocked 的调用次数来钉住这个行为。
+func TestAddCustomModelsPersistsOnceForWholeBatch(t *testing.T) {
+	useTemporaryPool(t)
+
+	orig := countSavePoolLocked
+	countSavePoolLocked = true
+	t.Cleanup(func() { countSavePoolLocked = orig; poolSaveCount.Store(0) })
+	poolSaveCount.Store(0)
+
+	ids := make([]string, 0, 120)
+	for i := 0; i < 120; i++ {
+		ids = append(ids, fmt.Sprintf("vendor/model-%d", i))
+	}
+
+	added, skipped, failed := addCustomModels(ids)
+	if len(added) != 120 || len(skipped) != 0 || len(failed) != 0 {
+		t.Fatalf("批量结果不对: added=%d skipped=%d failed=%d", len(added), len(skipped), len(failed))
+	}
+	if got := poolSaveCount.Load(); got != 1 {
+		t.Fatalf("整批落盘次数 = %d, want 1（逐个落盘会让每个代理请求排队等磁盘）", got)
+	}
+
+	// 再次提交同一批：全部 skipped，且一个都没变
+	poolSaveCount.Store(0)
+	added2, skipped2, failed2 := addCustomModels(ids)
+	if len(added2) != 0 || len(skipped2) != 120 || len(failed2) != 0 {
+		t.Fatalf("重复提交结果不对: added=%d skipped=%d failed=%d", len(added2), len(skipped2), len(failed2))
+	}
+	if got := poolSaveCount.Load(); got != 0 {
+		t.Fatalf("无事可做时不应落盘，实际 %d 次", got)
+	}
+
+	// 落盘后的内容必须真的写进了账号池文件（重启后仍在）
+	pool := loadPool()
+	poolMu.Lock()
+	got := len(pool.CustomModels)
+	poolMu.Unlock()
+	if got != 120 {
+		t.Fatalf("CustomModels = %d, want 120", got)
+	}
+}
+
+// 批量添加的边界：批内重复、非法 id、内置模型重新启用、以及体积上限。
+func TestAddCustomModelsEdgeCases(t *testing.T) {
+	useTemporaryPool(t)
+
+	t.Run("批内重复按已存在跳过", func(t *testing.T) {
+		added, skipped, failed := addCustomModels([]string{"vendor/dup", "vendor/dup", "vendor/dup"})
+		if len(added) != 1 || len(skipped) != 2 || len(failed) != 0 {
+			t.Fatalf("added=%v skipped=%v failed=%v", added, skipped, failed)
+		}
+	})
+
+	t.Run("非法 id 进 failed 且不影响同批其它项", func(t *testing.T) {
+		added, _, failed := addCustomModels([]string{"vendor/ok", "bad|pipe"})
+		if len(failed) != 1 || len(added) != 1 || added[0] != "vendor/ok" {
+			t.Fatalf("added=%v failed=%v", added, failed)
+		}
+	})
+
+	t.Run("内置模型已启用时计入 skipped", func(t *testing.T) {
+		added, skipped, failed := addCustomModels([]string{defaultModel})
+		if len(added) != 0 || len(skipped) != 1 || len(failed) != 0 {
+			t.Fatalf("added=%v skipped=%v failed=%v", added, skipped, failed)
+		}
+	})
+
+	t.Run("删除过的内置模型可批量重新启用", func(t *testing.T) {
+		useTemporaryPool(t)
+		if err := deleteCustomModel(defaultModel); err != nil {
+			t.Fatalf("先删除内置模型: %v", err)
+		}
+		added, skipped, failed := addCustomModels([]string{defaultModel, "vendor/x"})
+		if len(added) != 2 || len(skipped) != 0 || len(failed) != 0 {
+			t.Fatalf("added=%v skipped=%v failed=%v", added, skipped, failed)
+		}
+		p := loadPool()
+		poolMu.Lock()
+		disabled := modelDisabledLocked(p, defaultModel)
+		poolMu.Unlock()
+		if disabled {
+			t.Error("批量添加后内置模型仍处于禁用状态")
+		}
+	})
+
+	t.Run("空批次不做任何事", func(t *testing.T) {
+		added, skipped, failed := addCustomModels(nil)
+		if len(added) != 0 || len(skipped) != 0 || len(failed) != 0 {
+			t.Fatalf("added=%v skipped=%v failed=%v", added, skipped, failed)
+		}
+	})
+}
+
+// 批量接口的条数上限：给出异常巨大的数组时必须拒绝，而不是照单全收。
+func TestAdminModelsBatchAddRejectsOversizedBatch(t *testing.T) {
+	useTemporaryPool(t)
+
+	ids := make([]string, maxBatchModelIDs+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("vendor/m-%d", i)
+	}
+	payload, err := json.Marshal(map[string]any{"ids": ids})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handleAdminModelsBatchAdd(rec, httptest.NewRequest(http.MethodPost,
+		"/admin/api/models/batch", bytes.NewReader(payload)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 刚好等于上限应放行
+	ids = ids[:maxBatchModelIDs]
+	payload, _ = json.Marshal(map[string]any{"ids": ids})
+	rec = httptest.NewRecorder()
+	handleAdminModelsBatchAdd(rec, httptest.NewRequest(http.MethodPost,
+		"/admin/api/models/batch", bytes.NewReader(payload)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("上限内应放行: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// handler 这一层也不能退化成逐个落盘：直接测 addCustomModels 只能证明那个函数是对的，
+// 挡不住「handler 改回循环调用 addCustomModel」。
+func TestAdminModelsBatchAddHandlerPersistsOnce(t *testing.T) {
+	useTemporaryPool(t)
+
+	orig := countSavePoolLocked
+	countSavePoolLocked = true
+	t.Cleanup(func() { countSavePoolLocked = orig; poolSaveCount.Store(0) })
+	poolSaveCount.Store(0)
+
+	ids := make([]string, 0, 90)
+	for i := 0; i < 90; i++ {
+		ids = append(ids, fmt.Sprintf("vendor/h-%d", i))
+	}
+	payload, err := json.Marshal(map[string]any{"ids": ids})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handleAdminModelsBatchAdd(rec, httptest.NewRequest(http.MethodPost,
+		"/admin/api/models/batch", bytes.NewReader(payload)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Data struct {
+			Added []string `json:"added"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data.Added) != 90 {
+		t.Fatalf("added = %d, want 90", len(body.Data.Added))
+	}
+	if got := poolSaveCount.Load(); got != 1 {
+		t.Fatalf("handler 批量添加落盘 %d 次, want 1", got)
 	}
 }
 

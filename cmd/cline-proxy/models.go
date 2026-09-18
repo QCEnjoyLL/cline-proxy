@@ -246,6 +246,104 @@ func addCustomModel(id string) (string, error) {
 	return id, nil
 }
 
+// addCustomModels 批量添加模型，语义与逐个调用 addCustomModel 等价，但**只落盘一次**。
+//
+// 为什么需要它：addCustomModel 每次成功都会 savePoolLocked（marshal 整个账号池 + 写临时
+// 文件 + rename），而这一切都在持有 poolMu 期间。面板的「全部添加」一个分组最多 96 个模型，
+// 逐个调用就等于在池锁里做 96 次整池写盘——期间所有代理请求都会卡在 pickAccount 的锁上，
+// 正是 pool.go 里特意把磁盘 I/O 挪到锁外要避免的情况。
+//
+// 参数顺序只影响失败时的错误信息；重复项按 errModelExists 计入 skipped。
+// 落盘失败会回滚本次全部改动并返回 errModelStorage。
+func addCustomModels(ids []string) (added, skipped []string, failed map[string]string) {
+	added = make([]string, 0, len(ids))
+	skipped = make([]string, 0, len(ids))
+	failed = make(map[string]string)
+
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+
+	// 先把这一批分类清楚，一个要改的都没有就不必落盘。
+	// 入参允许重复：同一批里出现两次时，第二个按「已存在」跳过（与逐个添加的语义一致）。
+	toEnable := make([]string, 0) // 需要重新启用的内置模型
+	toAppend := make([]string, 0) // 需要新增的自定义模型
+	seen := make(map[string]bool, len(ids))
+	for _, raw := range ids {
+		id, err := normalizeModelID(raw)
+		if err != nil {
+			failed[raw] = err.Error()
+			continue
+		}
+		if seen[id] {
+			skipped = append(skipped, id)
+			continue
+		}
+		seen[id] = true
+
+		if isDefaultModelID(id) {
+			// 内置模型「已启用」时无需改动；被删除过（在 DisabledModels 里）才重新启用。
+			if modelDisabledLocked(p, id) {
+				toEnable = append(toEnable, id)
+			} else {
+				skipped = append(skipped, id)
+			}
+			continue
+		}
+		if containsString(p.CustomModels, id) {
+			skipped = append(skipped, id)
+			continue
+		}
+		toAppend = append(toAppend, id)
+	}
+
+	if len(toEnable) == 0 && len(toAppend) == 0 {
+		return added, skipped, failed
+	}
+
+	// 改内存，最后只写一次盘；写失败则把内存整体回滚（与 addCustomModel 一致）。
+	originalDisabled := append([]string(nil), p.DisabledModels...)
+	originalCustomLen := len(p.CustomModels)
+
+	if len(toEnable) > 0 {
+		filtered := make([]string, 0, len(p.DisabledModels))
+		for _, disabledID := range p.DisabledModels {
+			if !containsString(toEnable, disabledID) {
+				filtered = append(filtered, disabledID)
+			}
+		}
+		p.DisabledModels = filtered
+	}
+	p.CustomModels = append(p.CustomModels, toAppend...)
+
+	if err := savePoolLocked(); err != nil {
+		p.DisabledModels = originalDisabled
+		p.CustomModels = p.CustomModels[:originalCustomLen]
+		reason := fmt.Errorf("%w: %v", errModelStorage, err).Error()
+		for _, id := range toEnable {
+			failed[id] = reason
+		}
+		for _, id := range toAppend {
+			failed[id] = reason
+		}
+		return added, skipped, failed
+	}
+
+	added = append(added, toEnable...)
+	added = append(added, toAppend...)
+	return added, skipped, failed
+}
+
+// containsString 是给上面那两个小规模集合用的线性查找（内置模型只有几个）。
+func containsString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
 func deleteCustomModel(id string) error {
 	// 同 setDefaultModel：删除是清理历史数据的唯一出口，绝不能被收紧后的
 	// 字符集校验挡在门外，否则旧 ID 会永久占位、删不掉。
