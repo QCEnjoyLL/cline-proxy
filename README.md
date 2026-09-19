@@ -18,7 +18,7 @@
 - 🎯 **上游渠道配置**：指定每个模型走哪条上游渠道，或把别名重定向到真实模型 ID
 - 📄 **账号分页与选择性导出**：可自定义每页条数，支持全选、勾选导出、单账号导出
 - 📝 **System Prompt 覆盖**：通过 `override.md` 替换客户端系统提示词
-- 💾 **配置持久化**：账号、API Key、自定义模型和默认模型统一保存
+- 💾 **配置持久化**：账号、API Key、模型、轮换策略、自定义请求头和冷却时长统一保存
 - 🌊 **流式响应**：支持 SSE 与工具调用转换
 
 ## 🚀 Docker Compose 快速部署
@@ -121,7 +121,7 @@ docker compose logs --tail=100
 
 | 主机文件 | 容器路径 | 内容 | 是否必需 |
 |---|---|---|:---:|
-| `.cline-accounts.json` | `/app/.cline-accounts.json` | 账号、Refresh Token、API Key、自定义模型、默认模型 | ✅ |
+| `.cline-accounts.json` | `/app/.cline-accounts.json` | 账号、Refresh Token、API Key、模型、轮换策略、自定义请求头、冷却时长 | ✅ |
 | `override.md` | `/app/override.md` | 自定义 System Prompt | 可选 |
 
 > ⚠️ `.cline-accounts.json` 含账号凭据，请限制文件权限，不要上传、分享或提交到 Git。
@@ -367,13 +367,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.5.1` | 源码版本号（`cmd/cline-proxy/version.go`）。**每次提交都会随版本号自动更新** |
+| `1.6.2` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.5.1   # 固定版本
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.6.2   # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

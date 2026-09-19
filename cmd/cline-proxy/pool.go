@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	pool      *AccountPool
-	poolMu    sync.Mutex
-	poolPath  string
+	pool     *AccountPool
+	poolMu   sync.Mutex
+	poolPath string
 )
 
 func init() {
@@ -32,6 +32,7 @@ func loadPool() *AccountPool {
 	if pool != nil {
 		return pool
 	}
+	setProxyConfig(defaultProxyConfig())
 
 	data, err := os.ReadFile(poolPath)
 	if err != nil {
@@ -93,6 +94,17 @@ func loadPool() *AccountPool {
 		}
 	}
 
+	cfg := defaultProxyConfig()
+	if p.ProxyConfig != nil {
+		switch p.ProxyConfig.Strategy {
+		case "round_robin", "fill", "random":
+			cfg.Strategy = p.ProxyConfig.Strategy
+		}
+		for k, v := range p.ProxyConfig.Headers {
+			cfg.Headers[k] = v
+		}
+	}
+	setProxyConfig(cfg)
 	pool = &p
 	return pool
 }
@@ -142,22 +154,44 @@ func backupUnreadablePool() (string, error) {
 	}
 	return backup, nil
 }
-// saveMu 只序列化「写文件」这一步：两个 goroutine 同时写同一个文件会互相截断，
-// 落盘结果变成两段 JSON 拼接，而 loadPool 对解析失败是静默换成空池，
-// 下次启动就等于「账号全没了」。
+
+// saveMu 串行化磁盘写入；快照序号防止锁外写盘时旧快照覆盖新配置。
 var saveMu sync.Mutex
+
+type poolSnapshot struct {
+	data     []byte
+	revision uint64
+}
+
+var poolRevision uint64      // 由 poolMu 保护
+var savedPoolRevision uint64 // 由 saveMu 保护
 
 // marshalPool 把账号池序列化成 JSON。
 //
 // 必须在持有 poolMu 时调用：pool 是全局共享对象，其他 goroutine 会在池锁内
 // append 切片、改字段，锁外读它的切片头属于数据竞争，可能撕出一个非法
 // 指针直接 panic。
-func marshalPool() ([]byte, error) {
+func marshalPool() (poolSnapshot, error) {
 	data, err := json.MarshalIndent(pool, "", "  ")
 	if err != nil {
 		log.Printf("Failed to marshal accounts: %v", err)
+		return poolSnapshot{}, err
 	}
-	return data, err
+	poolRevision++
+	return poolSnapshot{data: data, revision: poolRevision}, nil
+}
+
+func writePoolSnapshot(snapshot poolSnapshot) error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	if snapshot.revision <= savedPoolRevision {
+		return nil
+	}
+	if err := writePoolFileLocked(snapshot.data); err != nil {
+		return err
+	}
+	savedPoolRevision = snapshot.revision
+	return nil
 }
 
 // renameFile 是 os.Rename 的间接层，供测试模拟「rename 不被允许」的环境。
@@ -179,7 +213,10 @@ var atomicReplaceUnsupportedFor string
 func writePoolFile(data []byte) error {
 	saveMu.Lock()
 	defer saveMu.Unlock()
+	return writePoolFileLocked(data)
+}
 
+func writePoolFileLocked(data []byte) error {
 	// 解析失败且留不下副本时禁止落盘：继续写下去会把用户唯一的账号文件
 	// 覆盖成空池。让每次保存都失败、把原因说清楚，比悄悄丢数据强。
 	if reason, _ := poolSaveBlocked.Load().(string); reason != "" {
@@ -246,11 +283,9 @@ func writePoolFile(data []byte) error {
 	return nil
 }
 
-// savePool 在池锁内序列化、在池锁外落盘。
-//
-// 调用方不得持有 poolMu——这里会取它。两个锁从不嵌套（poolMu 只包 marshal，
-// saveMu 只包 write），所以不存在锁序死锁；已经持有 poolMu 的调用点必须改用
-// savePoolLocked，否则会自锁死。
+// savePool 在池锁内序列化、在池锁外落盘；旧快照会被写入序号过滤。
+// 调用方不得持有 poolMu。需要嵌套时只能按 poolMu → saveMu 的顺序取锁，
+// 已持有 poolMu 的调用点必须用 savePoolLocked。
 func savePool() error {
 	poolMu.Lock()
 	data, err := marshalPool()
@@ -258,7 +293,7 @@ func savePool() error {
 	if err != nil {
 		return err
 	}
-	return writePoolFile(data)
+	return writePoolSnapshot(data)
 }
 
 // 落盘次数计数，只给测试用。批量添加的承诺是「整批一次落盘」，
@@ -277,7 +312,7 @@ func savePoolLocked() error {
 	if err != nil {
 		return err
 	}
-	return writePoolFile(data)
+	return writePoolSnapshot(data)
 }
 
 func addAccount(acc *Account) {
@@ -399,7 +434,7 @@ func pickAccount(modelID string) *Account {
 	poolMu.Unlock()
 
 	if err == nil {
-		if werr := writePoolFile(data); werr != nil {
+		if werr := writePoolSnapshot(data); werr != nil {
 			log.Printf("Failed to persist accounts after picking an account: %v", werr)
 		}
 	}
@@ -504,7 +539,7 @@ func snapshotAccountStats() accountStats {
 
 	s := accountStats{Total: len(p.Accounts)}
 	for _, a := range p.Accounts {
-		if a != nil && a.Status == "active" {
+		if a != nil && a.Status == "active" && !a.Disabled {
 			s.Active++
 		}
 	}

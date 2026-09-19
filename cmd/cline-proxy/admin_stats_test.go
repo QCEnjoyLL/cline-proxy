@@ -13,6 +13,8 @@ import (
 // （web/admin.html: `if (s.strategy) _('settingStrategy').value = s.strategy;`）。
 // 写死常量会让用户把策略改成 fill / random 后，页面仍然显示 round_robin。
 func TestStatsReportsConfiguredStrategy(t *testing.T) {
+	useTemporaryPool(t)
+	loadPool()
 	original := getProxyConfig()
 	t.Cleanup(func() { setProxyConfig(original) })
 

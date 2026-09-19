@@ -268,10 +268,10 @@ func registerOAuthSession(id string, state *oauthSessionState) {
 }
 
 type apiResponse struct {
-	Success bool        `json:"success"`
-	Data    any         `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Message string      `json:"message,omitempty"`
+	Success bool   `json:"success"`
+	Data    any    `json:"data,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type accountTransfer struct {
@@ -1165,31 +1165,18 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		cooldownToApply = &m
 	}
 
-	// 先做唯一会写盘的步骤：它失败时其余修改都还没生效，
-	// 响应与内存状态保持一致。
-	// 冷却时长持久化到账号池文件（跨重启保留），且只在值确实变化时才清空
-	// 现有冷却——否则改一个无关设置就会把所有仍在限流的组合放回池里，
-	// 立刻再次撞 429。
-	if cooldownToApply != nil {
-		prev := cooldownMinutes()
-		if err := setCooldownMinutes(*cooldownToApply); err != nil {
-			writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "persist cooldownMinutes: " + err.Error()})
-			return
-		}
-		if *cooldownToApply != prev {
-			cooldowns.clearAll()
-		}
-	}
-
+	// 同一次请求的设置一起校验、一起保存；写盘失败时全部回滚。
+	// 池锁同时串行化配置更新，避免并发请求覆盖彼此的请求头修改。
+	p := loadPool()
+	poolMu.Lock()
 	if req.DefaultModel != nil {
-		if err := setDefaultModel(*req.DefaultModel); err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, errModelStorage) {
-				status = http.StatusInternalServerError
-			}
-			writeAPI(w, status, apiResponse{Error: err.Error()})
+		id := normalizeExistingModelID(*req.DefaultModel)
+		if !modelExistsLocked(p, id) {
+			poolMu.Unlock()
+			writeAPI(w, http.StatusBadRequest, apiResponse{Error: errModelUnknown.Error()})
 			return
 		}
+		req.DefaultModel = &id
 	}
 
 	// 必须基于副本修改：getProxyConfig() 返回共享指针，就地改 Headers
@@ -1209,13 +1196,42 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	for k, v := range req.Headers {
 		next.Headers[k] = v
 	}
+	previousConfig, previousModel, previousCooldown := p.ProxyConfig, p.DefaultModel, p.CooldownMinutes
+	p.ProxyConfig = next
+	if req.DefaultModel != nil {
+		p.DefaultModel = *req.DefaultModel
+	}
+	if cooldownToApply != nil {
+		p.CooldownMinutes = *cooldownToApply
+	}
+	if err := savePoolLocked(); err != nil {
+		p.ProxyConfig, p.DefaultModel, p.CooldownMinutes = previousConfig, previousModel, previousCooldown
+		poolMu.Unlock()
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "persist config: " + err.Error()})
+		return
+	}
 	setProxyConfig(next)
+	if previousCooldown <= 0 {
+		previousCooldown = defaultCooldownMinutes
+	}
+	if cooldownToApply != nil && *cooldownToApply != previousCooldown {
+		cooldowns.clearAll()
+	}
+	defaultModel := p.DefaultModel
+	if !modelExistsLocked(p, defaultModel) {
+		defaultModel = firstAvailableModelLocked(p)
+	}
+	cooldown := p.CooldownMinutes
+	if cooldown <= 0 {
+		cooldown = defaultCooldownMinutes
+	}
+	poolMu.Unlock()
 
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
 		"strategy":        next.Strategy,
 		"headers":         next.Headers,
-		"defaultModel":    getDefaultModel(),
-		"cooldownMinutes": cooldownMinutes(),
+		"defaultModel":    defaultModel,
+		"cooldownMinutes": cooldown,
 	}})
 }
 

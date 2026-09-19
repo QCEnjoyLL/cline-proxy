@@ -26,6 +26,8 @@ type AccountPool struct {
 	CustomModels   []string   `json:"customModels,omitempty"`
 	DisabledModels []string   `json:"disabledModels,omitempty"`
 	DefaultModel   string     `json:"defaultModel,omitempty"`
+	// ProxyConfig 保存轮换策略和自定义请求头；旧文件缺省时使用内置配置。
+	ProxyConfig *proxyConfigData `json:"proxyConfig,omitempty"`
 	// CooldownMinutes 是「账号×模型」级 429 冷却的自动恢复时长（分钟）。
 	// 存在账号池文件里以便跨重启保留；0 表示用默认值。
 	CooldownMinutes int `json:"cooldownMinutes,omitempty"`

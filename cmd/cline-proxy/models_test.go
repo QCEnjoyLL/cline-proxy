@@ -14,11 +14,13 @@ import (
 func useTemporaryPool(t *testing.T) {
 	t.Helper()
 	originalPool, originalPath := pool, poolPath
+	originalConfig := getProxyConfig()
 	pool = nil
 	poolPath = filepath.Join(t.TempDir(), ".cline-accounts.json")
 	t.Cleanup(func() {
 		pool = originalPool
 		poolPath = originalPath
+		setProxyConfig(originalConfig)
 	})
 }
 

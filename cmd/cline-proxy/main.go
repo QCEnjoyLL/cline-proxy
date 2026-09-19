@@ -6,7 +6,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -75,6 +78,11 @@ func buildAndStart(port int) {
 	if runtime.GOOS != "windows" {
 		exe = "./cline-proxy"
 	}
+	exe, err := filepath.Abs(exe)
+	if err != nil {
+		fmt.Printf("Resolve executable path failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Println("Building proxy...")
 	cmd := exec.Command("go", "build", "-o", exe, "./cmd/cline-proxy")
@@ -88,8 +96,9 @@ func buildAndStart(port int) {
 
 	running := false
 	if runtime.GOOS == "windows" {
-		out, _ := exec.Command("powershell", "-Command",
-			"Get-Process cline-proxy -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id").Output()
+		// 只有同一路径的代理已监听目标端口时才复用，其他端口的实例不算。
+		script := fmt.Sprintf(`Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue } | Where-Object { $_.Path -eq '%s' } | Select-Object -ExpandProperty Id`, port, strings.ReplaceAll(exe, "'", "''"))
+		out, _ := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
 		if len(out) > 0 {
 			running = true
 		}
@@ -99,7 +108,7 @@ func buildAndStart(port int) {
 		fmt.Println("Proxy is already running.")
 	} else {
 		fmt.Println("Starting proxy...")
-		startCmd := exec.Command(exe)
+		startCmd := exec.Command(exe, "-port", strconv.Itoa(port))
 		startCmd.Stdout = os.Stdout
 		startCmd.Stderr = os.Stderr
 		if err := startCmd.Start(); err != nil {

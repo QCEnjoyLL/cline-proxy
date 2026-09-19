@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	defaultModel          = "cline-free/glm-5.2"
-	defaultMaxTokens      = 128000
+	defaultModel           = "cline-free/glm-5.2"
+	defaultMaxTokens       = 128000
 	defaultReasoningEffort = "high"
 	// maxPendingToolCalls 是单个流里同时跟踪的工具调用数上限。
 	// pendingTools 按上游给的下标索引，下标不受我们控制；没有上限的话，
@@ -141,16 +141,16 @@ var passThroughKeys = []string{
 }
 
 type chatRequest struct {
-	Model       string          `json:"model"`
-	Messages    json.RawMessage `json:"messages"`
-	Stream      bool            `json:"stream,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Model               string          `json:"model"`
+	Messages            json.RawMessage `json:"messages"`
+	Stream              bool            `json:"stream,omitempty"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
-	Tools       json.RawMessage `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
-	ReasoningEffortAlt string  `json:"reasoningEffort,omitempty"`
-	Extra       map[string]any `json:"-"`
+	Tools               json.RawMessage `json:"tools,omitempty"`
+	ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
+	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+	ReasoningEffortAlt  string          `json:"reasoningEffort,omitempty"`
+	Extra               map[string]any  `json:"-"`
 }
 
 func startProxy(port int) error {
@@ -162,7 +162,7 @@ func startProxy(port int) error {
 	p := loadPool()
 	activeCount := 0
 	for _, a := range p.Accounts {
-		if a.Status == "active" {
+		if a != nil && a.Status == "active" && !a.Disabled {
 			// Try to pre-warm tokens
 			if a.AccessToken == "" || time.Now().UnixMilli() >= a.ExpiresAt {
 				if err := refreshAccountToken(a); err != nil {
@@ -179,21 +179,8 @@ func startProxy(port int) error {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/v1/health", corsHandler(func(w http.ResponseWriter, r *http.Request) {
-		info := map[string]any{
-			"status":       "ok",
-			"version":      versionLabel(),
-			"activeAccounts": activeCount,
-		}
-		writeJSON(w, http.StatusOK, info)
-	}))
-	mux.HandleFunc("/health", corsHandler(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":         "ok",
-			"version":        versionLabel(),
-			"activeAccounts": activeCount,
-		})
-	}))
+	mux.HandleFunc("/v1/health", corsHandler(handleHealth))
+	mux.HandleFunc("/health", corsHandler(handleHealth))
 
 	// Admin API (frontend + REST)
 	registerAdminRoutes(mux)
@@ -405,6 +392,15 @@ func startProxy(port int) error {
 	}
 }
 
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	stats := snapshotAccountStats()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "ok",
+		"version":        versionLabel(),
+		"activeAccounts": stats.Active,
+	})
+}
+
 func corsHandler(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -482,9 +478,9 @@ func buildUpstreamBody(params map[string]any, stream bool) map[string]any {
 	model := effectiveModel(params)
 
 	body := map[string]any{
-		"model":        model,
-		"max_tokens":   maxTokens,
-		"session_id":   sessionID,
+		"model":            model,
+		"max_tokens":       maxTokens,
+		"session_id":       sessionID,
 		"reasoning_effort": defaultReasoningEffort,
 	}
 
@@ -652,7 +648,6 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 			"API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
 	}
 
-
 	poolMu.Lock()
 	bumpAccountUsage(acc, time.Now())
 	poolMu.Unlock()
@@ -771,7 +766,7 @@ func handleStreamResponse(w http.ResponseWriter, upstream *http.Response) {
 			// Try to normalize the response
 			var obj map[string]any
 			if err := json.Unmarshal([]byte(payload), &obj); err == nil {
-				// Some Cline responses wrap in {data: {...}} 
+				// Some Cline responses wrap in {data: {...}}
 				if data, ok := obj["data"]; ok {
 					if d, ok := data.(map[string]any); ok {
 						if _, hasChoices := d["choices"]; hasChoices {
@@ -1085,10 +1080,10 @@ func anthropicToOpenAI(req anthropicReq) map[string]any {
 
 func openAIToAnthropic(openAI map[string]any) map[string]any {
 	out := map[string]any{
-		"id":      "msg_" + fmt.Sprintf("%x", time.Now().UnixMilli()),
-		"type":    "message",
-		"role":    "assistant",
-		"model":   getNested(openAI, "model"),
+		"id":    "msg_" + fmt.Sprintf("%x", time.Now().UnixMilli()),
+		"type":  "message",
+		"role":  "assistant",
+		"model": getNested(openAI, "model"),
 	}
 
 	choices := getNested(openAI, "choices")

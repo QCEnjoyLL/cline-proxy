@@ -82,13 +82,9 @@ func TestAccountStatsHelpersAgreeWithPool(t *testing.T) {
 	if s.Total != 3 {
 		t.Errorf("Total = %d, want 3", s.Total)
 	}
-	// Active 只统计 Status == "active"，**不**扣除 Disabled——这与
-	// snapshotAccountStats 的定位一致：它是给「池子里有没有可用账号」这类守卫用的
-	// 粗判，不是给 admin 面板那套「活跃/已禁用/已过期」三分类用的
-	// （面板用的是 handleAdminStats 里更细的统计）。
-	// a2 虽然被手动禁用，但 Status 仍是 "active"，所以这里算 2。
-	if s.Active != 2 {
-		t.Errorf("Active = %d, want 2（a1 与 a2 的 Status 都是 active）", s.Active)
+	// 手动禁用的账号不能接收请求，不计入健康接口的活跃数。
+	if s.Active != 1 {
+		t.Errorf("Active = %d, want 1（只有 a1 活跃且未禁用）", s.Active)
 	}
 }
 

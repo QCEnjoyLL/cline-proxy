@@ -613,6 +613,10 @@ html.theme-anim,html.theme-anim *{
 <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
 <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
 <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></symbol>
+<symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+<symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-chevrons-left" viewBox="0 0 24 24"><path d="m11 18-6-6 6-6m8 12-6-6 6-6"/></symbol>
+<symbol id="i-chevrons-right" viewBox="0 0 24 24"><path d="m5 18 6-6-6-6m8 12 6-6-6-6"/></symbol>
 <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
 </defs></svg>
 <div class="layout">
@@ -774,11 +778,11 @@ html.theme-anim,html.theme-anim *{
           <option value="10">10</option><option value="20">20</option>
           <option value="50">50</option><option value="100">100</option>
         </select>
-        <button class="btn btn-sm" id="acctFirst" onclick="gotoAccountPage(1)" title="首页"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg></button>
-        <button class="btn btn-sm" id="acctPrev" onclick="gotoAccountPage(accountPage - 1)" title="上一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
+        <button class="btn btn-sm" id="acctFirst" onclick="gotoAccountPage(1)" title="首页" aria-label="首页"><svg class="ic" aria-hidden="true"><use href="#i-chevrons-left"/></svg></button>
+        <button class="btn btn-sm" id="acctPrev" onclick="gotoAccountPage(accountPage - 1)" title="上一页" aria-label="上一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
         <span class="mono" id="acctPageInfo" style="font-size:12px;color:var(--text2)">-</span>
-        <button class="btn btn-sm" id="acctNext" onclick="gotoAccountPage(accountPage + 1)" title="下一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
-        <button class="btn btn-sm" id="acctLast" onclick="gotoAccountPage(accountPageTotal)" title="末页"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg></button>
+        <button class="btn btn-sm" id="acctNext" onclick="gotoAccountPage(accountPage + 1)" title="下一页" aria-label="下一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
+        <button class="btn btn-sm" id="acctLast" onclick="gotoAccountPage(accountPageTotal)" title="末页" aria-label="末页"><svg class="ic" aria-hidden="true"><use href="#i-chevrons-right"/></svg></button>
       </div>
     </div>
   </div>
@@ -1244,9 +1248,10 @@ function gotoAccountPage(page) {
 function setAccountPageSize(value) {
   const size = parseInt(value, 10);
   if (!size || size < 1) return;
+  const firstVisibleIndex = (accountPage - 1) * accountPageSize;
   accountPageSize = size;
   // 保持当前第一条记录尽量还在视野内，而不是跳回第一页。
-  accountPage = Math.max(1, Math.floor(((accountPage - 1) * accountPageSize) / size) + 1);
+  accountPage = Math.floor(firstVisibleIndex / size) + 1;
   accountPageTotal = Math.max(1, Math.ceil(accountList.length / accountPageSize));
   if (accountPage > accountPageTotal) accountPage = accountPageTotal;
   renderAccountPage();
