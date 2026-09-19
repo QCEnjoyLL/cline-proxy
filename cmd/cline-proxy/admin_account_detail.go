@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,28 @@ type accountDetailData struct {
 	UsageCount      int64  `json:"usageCount"`
 	LastUsed        string `json:"lastUsed,omitempty"`
 	CreatedAt       string `json:"createdAt,omitempty"`
+	// 凭据字段。默认只给脱敏片段（前6后4），完整值只在 reveal=1 时下发。
+	// 理由：详情是「看一眼」的常规操作，不该每次都把可长期使用的凭据
+	// 送进浏览器；但用户确实需要能把它复制出来的入口，所以留了显式通道。
+	RefreshTokenMasked string `json:"refreshTokenMasked,omitempty"`
+	AccessTokenMasked  string `json:"accessTokenMasked,omitempty"`
+	RefreshToken       string `json:"refreshToken,omitempty"`
+	AccessToken        string `json:"accessToken,omitempty"`
+	ExpiresAt          int64  `json:"expiresAt,omitempty"`
+}
+
+// maskCredential 只留首尾便于辨认，中间一律打码。
+//
+// 短于 16 字符时全部打码：这类值几乎不可能是真 token，
+// 但按「前6后4」处理会把它们几乎完整暴露出来。
+func maskCredential(v string) string {
+	if v == "" {
+		return ""
+	}
+	if len(v) < 16 {
+		return strings.Repeat("*", len(v))
+	}
+	return v[:6] + strings.Repeat("*", 8) + v[len(v)-4:]
 }
 
 // GET /admin/api/accounts/detail?accountId=xxx
@@ -57,10 +80,12 @@ func handleAdminAccountDetail(w http.ResponseWriter, r *http.Request) {
 	poolMu.Lock()
 	email, status, disabled := acc.Email, acc.Status, acc.Disabled
 	daily, total, lastUsed, createdAt := acc.DailyUsageCount, acc.UsageCount, acc.LastUsed, acc.CreatedAt
+	refreshToken, accessToken, expiresAt := acc.RefreshToken, acc.AccessToken, acc.ExpiresAt
+	usageDate := acc.DailyUsageDate
 	poolMu.Unlock()
 
 	// 用量计数同样按「本地日」口径展示，与账号列表一致。
-	if acc.DailyUsageDate != currentDateKey(now) {
+	if usageDate != currentDateKey(now) {
 		daily = 0
 	}
 
@@ -82,15 +107,23 @@ func handleAdminAccountDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := accountDetailData{
-		AccountID:       accountID,
-		Email:           email,
-		Status:          status,
-		Disabled:        disabled,
-		CooldownMinutes: cooldownMinutes(),
-		Limited:         limited,
-		OtherModels:     other,
-		DailyUsageCount: daily,
-		UsageCount:      total,
+		AccountID:          accountID,
+		Email:              email,
+		Status:             status,
+		Disabled:           disabled,
+		CooldownMinutes:    cooldownMinutes(),
+		Limited:            limited,
+		OtherModels:        other,
+		DailyUsageCount:    daily,
+		UsageCount:         total,
+		RefreshTokenMasked: maskCredential(refreshToken),
+		AccessTokenMasked:  maskCredential(accessToken),
+		ExpiresAt:          expiresAt,
+	}
+	// reveal=1 才回完整凭据，供面板的「复制」按钮按需取一次。
+	if r.URL.Query().Get("reveal") == "1" {
+		data.RefreshToken = refreshToken
+		data.AccessToken = accessToken
 	}
 	if !lastUsed.IsZero() {
 		data.LastUsed = lastUsed.Format(time.RFC3339)

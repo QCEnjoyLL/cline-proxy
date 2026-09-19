@@ -29,4 +29,8 @@ type AccountPool struct {
 	// CooldownMinutes 是「账号×模型」级 429 冷却的自动恢复时长（分钟）。
 	// 存在账号池文件里以便跨重启保留；0 表示用默认值。
 	CooldownMinutes int `json:"cooldownMinutes,omitempty"`
+	// PerModel 是「按模型配置上游渠道」的持久化存储，key 是模型 ID。
+	// 为空时（未配置）代理行为与之前完全一致，因此不需要旧文件迁移。
+	// 见 upstream.go 的 ModelUpstream。
+	PerModel map[string]ModelUpstream `json:"perModel,omitempty"`
 }

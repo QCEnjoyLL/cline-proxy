@@ -317,6 +317,11 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/model-catalog", corsHandler(handleAdminModelCatalog))
 	mux.HandleFunc("/admin/api/config", corsHandler(handleAdminConfig))
 	mux.HandleFunc("/admin/api/config/update", corsHandler(handleAdminUpdateConfig))
+	// 上游渠道配置（见 upstream.go）：列表 / 保存 / 探测。
+	mux.HandleFunc("/admin/api/upstreams", corsHandler(handleAdminUpstreams))
+	mux.HandleFunc("/admin/api/upstreams/save", corsHandler(handleAdminUpstreamSave))
+	mux.HandleFunc("/admin/api/upstreams/delete", corsHandler(handleAdminUpstreamDelete))
+	mux.HandleFunc("/admin/api/upstreams/probe", corsHandler(handleAdminUpstreamProbe))
 }
 
 func adminStaticHandler(w http.ResponseWriter, r *http.Request) {
@@ -351,11 +356,29 @@ func handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /admin/api/accounts/export returns data accepted by the batch import API.
+// GET /admin/api/accounts/export[?ids=a,b,c]
+//
+// 不带 ids 时导出全部（默认行为，与旧版一致）；带 ids 时只导出指定账号，
+// 供面板的「导出选中」和「单独导出某一个」复用同一个接口。
+// 导出的结构就是批量导入能接受的格式，所以导出文件可以直接重新导入。
 func handleAdminAccountExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
+	}
+
+	// ids 为空 = 不过滤。
+	var wanted map[string]struct{}
+	if raw := strings.TrimSpace(r.URL.Query().Get("ids")); raw != "" {
+		wanted = make(map[string]struct{})
+		for _, id := range strings.Split(raw, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				wanted[id] = struct{}{}
+			}
+		}
+		if len(wanted) == 0 {
+			wanted = nil
+		}
 	}
 
 	p := loadPool()
@@ -364,6 +387,11 @@ func handleAdminAccountExport(w http.ResponseWriter, r *http.Request) {
 	for _, account := range p.Accounts {
 		if account == nil {
 			continue
+		}
+		if wanted != nil {
+			if _, ok := wanted[account.AccountID]; !ok {
+				continue
+			}
 		}
 		accounts = append(accounts, accountTransfer{
 			RefreshToken: account.RefreshToken,

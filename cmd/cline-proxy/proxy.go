@@ -135,6 +135,9 @@ var passThroughKeys = []string{
 	"temperature", "top_p", "top_k", "stop", "presence_penalty", "frequency_penalty",
 	"response_format", "user", "n", "logit_bias", "seed", "logprobs", "top_logprobs",
 	"stream_options", "metadata",
+	// provider / providerOptions 是上游渠道钉住的载体（见 upstream.go）。
+	// 不带它们会被 buildUpstreamBody 丢弃，客户端的渠道偏好就永远到不了上游。
+	"provider", "providerOptions",
 }
 
 type chatRequest struct {
@@ -508,6 +511,11 @@ func buildUpstreamBody(params map[string]any, stream bool) map[string]any {
 			body[key] = val
 		}
 	}
+
+	// 上游渠道钉住与模型重定向。放在客户端字段透传**之后**，这样用户在面板里
+	// 配置的偏好优先于客户端传进来的同名键——否则任意持有 API Key 的调用者
+	// 都能覆盖后台配置的上游路由。
+	applyUpstreamPrefs(body, model)
 
 	return body
 }

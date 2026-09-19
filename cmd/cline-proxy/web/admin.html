@@ -620,6 +620,7 @@ html.theme-anim,html.theme-anim *{
 <h1><span class="brand-mark"><svg class="ic-lg" aria-hidden="true"><use href="#i-zap"/></svg></span>Cline 代理</h1>
 <div class="nav-item active" data-tab="dashboard"><span><svg class="ic" aria-hidden="true"><use href="#i-chart"/></svg></span> 仪表盘</div>
 <div class="nav-item" data-tab="models"><span><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg></span> 模型库</div>
+<div class="nav-item" data-tab="upstreams"><span><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg></span> 上游配置</div>
 <div class="nav-item" data-tab="accounts"><span><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg></span> 账号管理</div>
 <div class="nav-item" data-tab="import"><span><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg></span> 导入账号</div>
 <div class="nav-item" data-tab="settings"><span><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg></span> 设置</div>
@@ -750,12 +751,36 @@ html.theme-anim,html.theme-anim *{
   <div class="section-body" style="padding:0">
     <table>
       <thead>
-        <tr><th>邮箱</th><th>状态</th><th>今日使用</th><th>总使用次数</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr>
+        <tr><th style="width:34px"><input type="checkbox" id="acctSelectAll" onchange="toggleSelectAllAccounts(this.checked)" title="全选本页"></th><th>邮箱</th><th>状态</th><th>今日使用</th><th>总使用次数</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr>
       </thead>
       <tbody id="accountTableBody">
-        <tr><td colspan="7" class="empty">加载中...</td></tr>
+        <tr><td colspan="8" class="empty">加载中...</td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-body">
+    <div class="flex justify-between" style="align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" onclick="exportSelectedAccounts()"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg>导出选中</button>
+        <button class="btn btn-sm" onclick="exportAccounts()"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>导出全部</button>
+        <span id="acctSelectionInfo" style="color:var(--text2);font-size:12px"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <label style="color:var(--text2);font-size:12px" for="acctPageSize">每页</label>
+        <select id="acctPageSize" onchange="setAccountPageSize(this.value)" style="width:auto">
+          <option value="10">10</option><option value="20">20</option>
+          <option value="50">50</option><option value="100">100</option>
+        </select>
+        <button class="btn btn-sm" id="acctFirst" onclick="gotoAccountPage(1)" title="首页"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg></button>
+        <button class="btn btn-sm" id="acctPrev" onclick="gotoAccountPage(accountPage - 1)" title="上一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
+        <span class="mono" id="acctPageInfo" style="font-size:12px;color:var(--text2)">-</span>
+        <button class="btn btn-sm" id="acctNext" onclick="gotoAccountPage(accountPage + 1)" title="下一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
+        <button class="btn btn-sm" id="acctLast" onclick="gotoAccountPage(accountPageTotal)" title="末页"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg></button>
+      </div>
+    </div>
   </div>
 </div>
 <div class="section">
@@ -932,6 +957,44 @@ html.theme-anim,html.theme-anim *{
 </div>
 </div>
 
+<div id="tab-upstreams" class="tab-panel" style="display:none">
+<div class="page-head">
+  <div>
+    <h2><svg class="ic-title" aria-hidden="true"><use href="#i-grid"/></svg>上游配置</h2>
+    <p class="page-sub">指定每个模型走哪条上游渠道，或把客户端使用的别名重定向到真实模型 ID</p>
+  </div>
+  <button class="btn btn-sm" onclick="loadUpstreams()"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+</div>
+
+<div class="section">
+  <div class="section-body">
+    <p style="color:var(--text2);margin-bottom:12px">
+      默认是 <b>自动</b>：不指定渠道，由 Cline 网关自己挑选、并在渠道故障时自动转移到下一个。
+      这是最稳也最省额度的用法；只有在某个渠道持续限流、或你必须固定走某个渠道时才手动钉住。
+    </p>
+    <div class="form-row">
+      <div class="field">
+        <label>要配置的模型</label>
+        <select id="upstreamModelSelect"></select>
+      </div>
+      <button class="btn btn-sm btn-primary" onclick="probeUpstream()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>探测渠道</button>
+      <button class="btn btn-sm" onclick="editUpstreamModel()"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg>配置</button>
+    </div>
+    <div id="probeResult"></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-list"/></svg>已保存的配置<span id="upstreamCount" style="margin-left:8px;color:var(--text2);font-weight:400;font-size:11.5px"></span></div>
+  <div class="section-body" style="padding:0">
+    <table>
+      <thead><tr><th>模型</th><th>模式</th><th>上游渠道</th><th>别名重定向</th><th>管道</th><th style="width:130px">操作</th></tr></thead>
+      <tbody id="upstreamTableBody"><tr><td colspan="6" class="empty">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+</div>
+
 </div>
 </div>
 
@@ -951,6 +1014,22 @@ html.theme-anim,html.theme-anim *{
       </button>
     </div>
     <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- 上游配置弹层。与账号详情同理，必须放在 .layout 之外、#toast 附近。 -->
+<div class="modal" id="upstreamModal" role="dialog" aria-modal="true" aria-labelledby="upstreamModalTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h3 id="upstreamModalTitle">配置上游</h3>
+        <div class="sub" id="upstreamModalSub"></div>
+      </div>
+      <button class="modal-close" type="button" onclick="closeUpstreamModal()" title="关闭" aria-label="关闭">
+        <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="upstreamModalBody"></div>
   </div>
 </div>
 
@@ -1011,6 +1090,7 @@ document.querySelectorAll('.nav-item').forEach(el => {
     if (el.dataset.tab === 'accounts') loadAccounts();
     if (el.dataset.tab === 'models') { loadRecommended(false); loadModels(); }
     if (el.dataset.tab === 'settings') { loadKeys(); loadModels(); loadConfig(); }
+    if (el.dataset.tab === 'upstreams') loadUpstreams();
   });
 });
 
@@ -1024,6 +1104,7 @@ function switchTab(name) {
   if (name === 'accounts') loadAccounts();
   if (name === 'models') { loadRecommended(false); loadModels(); }
   if (name === 'settings') { loadKeys(); loadModels(); }
+  if (name === 'upstreams') loadUpstreams();
 }
 
 // 导入子标签
@@ -1062,44 +1143,131 @@ async function loadStats() {
 }
 
 // ========== 账号管理 ==========
+// 分页状态。账号列表可能很长（几百个），一次性渲染既慢又难用。
+// 默认 10 条/页，用户可在工具栏改。
+let accountList = [];          // 全量账号（服务端一次给全，前端切片）
+let accountPage = 1;
+let accountPageTotal = 1;
+let accountPageSize = 10;
+const accountSelected = new Set();  // 勾选的 accountId，跨页保留以便「导出选中」
+
 async function loadAccounts() {
   loadCooldowns(); // 冷却状态与账号列表一起刷新（两个独立请求，互不阻塞）
   try {
     const d = await api('GET', '/accounts');
-    const list = d.data.accounts;
-    const tbody = _('accountTableBody');
-    if (!list || list.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无账号，前往 <a href="#" onclick="switchTab(\'import\')" style="color:var(--accent);cursor:pointer">导入账号</a> 页添加</td></tr>';
-      return;
-    }
-    const sn = { active: '活跃', cooldown: '冷却', expired: '已过期' };
-    tbody.innerHTML = list.map(a => {
-      const lu = a.lastUsed ? new Date(a.lastUsed).toLocaleString('zh-CN') : '-';
-      const cr = a.createdAt ? new Date(a.createdAt).toLocaleString('zh-CN') : '-';
-      const dis = !!a.disabled;
-      // 状态徽章：手动禁用优先于自动状态（禁用的账号不参与轮询）
-      const badge = dis
-        ? '<span class="status disabled"><span class="status-dot disabled"></span>已禁用</span>'
-        : '<span class="status ' + a.status + '"><span class="status-dot ' + a.status + '"></span>' + (sn[a.status] || a.status) + '</span>';
-      // 操作按钮：禁用态显示「启用」，正常态显示「禁用」
-      const toggle = dis
-        ? '<button class="btn btn-sm btn-success" onclick="setAccountEnabled(\'' + jsStr(a.accountId) + '\')" title="启用（参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></button> '
-        : '<button class="btn btn-sm" onclick="setAccountDisabledClick(\'' + jsStr(a.accountId) + '\')" title="禁用（不参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg></button> ';
-      return '<tr' + (dis ? ' style="opacity:.55"' : '') + '>' +
-        '<td>' + esc(a.email) + '</td>' +
-        '<td>' + badge + '</td>' +
-        '<td>' + (a.dailyUsageCount || 0) + '</td>' +
-        '<td>' + (a.usageCount || 0) + '</td>' +
-        '<td class="mono" style="font-size:11px">' + lu + '</td>' +
-        '<td class="mono" style="font-size:11px">' + cr + '</td>' +
-        '<td style="white-space:nowrap">' +
-          toggle +
-          '<button class="btn btn-sm" onclick="showAccountDetail(\'' + jsStr(a.accountId) + '\')" title="账号详情（按模型查看额度与重置时间）"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button> ' +
-          '<button class="btn btn-sm" onclick="resetAccount(\'' + jsStr(a.accountId) + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
-          '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + jsStr(a.accountId) + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
-        '</td></tr>';
-    }).join('');
+    accountList = d.data.accounts || [];
+    // 账号被删掉后，勾选集合里的残留 id 要清掉，否则「导出选中」会带上不存在的项。
+    const alive = new Set(accountList.map(a => a.accountId));
+    accountSelected.forEach(id => { if (!alive.has(id)) accountSelected.delete(id); });
+    accountPageTotal = Math.max(1, Math.ceil(accountList.length / accountPageSize));
+    if (accountPage > accountPageTotal) accountPage = accountPageTotal;
+    if (accountPage < 1) accountPage = 1;
+    renderAccountPage();
   } catch (e) { toast('加载账号失败: ' + e.message, 'error'); }
+}
+
+function renderAccountPage() {
+  const tbody = _('accountTableBody');
+  const total = accountList.length;
+  if (total === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无账号，前往 <a href="#" onclick="switchTab(\'import\')" style="color:var(--accent);cursor:pointer">导入账号</a> 页添加</td></tr>';
+    updateAccountPager();
+    return;
+  }
+  const start = (accountPage - 1) * accountPageSize;
+  const pageRows = accountList.slice(start, start + accountPageSize);
+  const sn = { active: '活跃', cooldown: '冷却', expired: '已过期' };
+  tbody.innerHTML = pageRows.map(a => {
+    const lu = a.lastUsed ? new Date(a.lastUsed).toLocaleString('zh-CN') : '-';
+    const cr = a.createdAt ? new Date(a.createdAt).toLocaleString('zh-CN') : '-';
+    const dis = !!a.disabled;
+    // 状态徽章：手动禁用优先于自动状态（禁用的账号不参与轮询）
+    const badge = dis
+      ? '<span class="status disabled"><span class="status-dot disabled"></span>已禁用</span>'
+      : '<span class="status ' + a.status + '"><span class="status-dot ' + a.status + '"></span>' + (sn[a.status] || a.status) + '</span>';
+    // 操作按钮：禁用态显示「启用」，正常态显示「禁用」
+    const toggle = dis
+      ? '<button class="btn btn-sm btn-success" onclick="setAccountEnabled(\'' + jsStr(a.accountId) + '\')" title="启用（参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></button> '
+      : '<button class="btn btn-sm" onclick="setAccountDisabledClick(\'' + jsStr(a.accountId) + '\')" title="禁用（不参与轮询）"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg></button> ';
+    const checked = accountSelected.has(a.accountId) ? ' checked' : '';
+    return '<tr' + (dis ? ' style="opacity:.55"' : '') + '>' +
+      '<td><input type="checkbox"' + checked + ' onchange="toggleAccountSelect(\'' + jsStr(a.accountId) + '\', this.checked)"></td>' +
+      '<td>' + esc(a.email) + '</td>' +
+      '<td>' + badge + '</td>' +
+      '<td>' + (a.dailyUsageCount || 0) + '</td>' +
+      '<td>' + (a.usageCount || 0) + '</td>' +
+      '<td class="mono" style="font-size:11px">' + lu + '</td>' +
+      '<td class="mono" style="font-size:11px">' + cr + '</td>' +
+      '<td style="white-space:nowrap">' +
+        toggle +
+        '<button class="btn btn-sm" onclick="showAccountDetail(\'' + jsStr(a.accountId) + '\')" title="账号详情（按模型查看额度、查看 token）"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button> ' +
+        '<button class="btn btn-sm" onclick="exportOneAccount(\'' + jsStr(a.accountId) + '\')" title="单独导出该账号"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg></button> ' +
+        '<button class="btn btn-sm" onclick="resetAccount(\'' + jsStr(a.accountId) + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + jsStr(a.accountId) + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
+      '</td></tr>';
+  }).join('');
+  updateAccountPager();
+}
+
+// updateAccountPager 刷新分页控件与勾选统计，并同步「全选本页」的勾中态。
+function updateAccountPager() {
+  const total = accountList.length;
+  const info = _('acctPageInfo');
+  if (info) info.textContent = total === 0 ? '0 / 0' : accountPage + ' / ' + accountPageTotal;
+  const sel = _('acctSelectionInfo');
+  if (sel) {
+    const shown = Math.min(accountPageSize, Math.max(0, total - (accountPage - 1) * accountPageSize));
+    sel.textContent = '共 ' + total + ' 个账号' +
+      (accountSelected.size ? '，已选 ' + accountSelected.size : '') +
+      (shown ? '，本页 ' + shown + ' 个' : '');
+  }
+  const first = _('acctFirst'), prev = _('acctPrev'), next = _('acctNext'), last = _('acctLast');
+  if (first) first.disabled = accountPage <= 1;
+  if (prev) prev.disabled = accountPage <= 1;
+  if (next) next.disabled = accountPage >= accountPageTotal;
+  if (last) last.disabled = accountPage >= accountPageTotal;
+  const all = _('acctSelectAll');
+  if (all) {
+    const start = (accountPage - 1) * accountPageSize;
+    const pageRows = accountList.slice(start, start + accountPageSize);
+    all.checked = pageRows.length > 0 && pageRows.every(a => accountSelected.has(a.accountId));
+  }
+}
+
+function gotoAccountPage(page) {
+  const target = Math.min(Math.max(1, page), accountPageTotal);
+  if (target === accountPage) return;
+  accountPage = target;
+  renderAccountPage();
+}
+
+function setAccountPageSize(value) {
+  const size = parseInt(value, 10);
+  if (!size || size < 1) return;
+  accountPageSize = size;
+  // 保持当前第一条记录尽量还在视野内，而不是跳回第一页。
+  accountPage = Math.max(1, Math.floor(((accountPage - 1) * accountPageSize) / size) + 1);
+  accountPageTotal = Math.max(1, Math.ceil(accountList.length / accountPageSize));
+  if (accountPage > accountPageTotal) accountPage = accountPageTotal;
+  renderAccountPage();
+}
+
+function toggleAccountSelect(accountId, checked) {
+  if (checked) accountSelected.add(accountId); else accountSelected.delete(accountId);
+  updateAccountPager();
+}
+
+function toggleSelectAllAccounts(checked) {
+  const start = (accountPage - 1) * accountPageSize;
+  accountList.slice(start, start + accountPageSize).forEach(a => {
+    if (checked) accountSelected.add(a.accountId); else accountSelected.delete(a.accountId);
+  });
+  renderAccountPage();
+}
+
+function clearAccountSelection() {
+  accountSelected.clear();
+  renderAccountPage();
 }
 
 // 冷却状态：粒度是「账号 × 模型」——同账号的其它模型不受影响，到点自动恢复。
@@ -1252,8 +1420,52 @@ function renderAccountDetail(a) {
     html += '<div>' + others.slice(0, 60).map(m => '<span class="chip">' + esc(m) + '</span>').join('') +
       (others.length > 60 ? '<span class="kv">…另有 ' + (others.length - 60) + ' 个</span>' : '') + '</div>';
   }
+  html += renderTokenSection(a);
 
   _('modalBody').innerHTML = html;
+}
+
+// renderTokenSection 渲染凭据区块。
+//
+// 默认只给脱敏片段 + 复制按钮，不把完整 token 铺在页面上：能打开后台的人
+// 本来就能通过导出接口拿到全部凭据，但「看得见」和「必须主动点一下」之间
+// 差着一层防误看的保护——截图、投屏、别人路过时都不会泄露。
+function renderTokenSection(a) {
+  const rows = [];
+  if (a.refreshTokenMasked) {
+    rows.push('<tr><td>Refresh Token</td><td class="mono" style="font-size:11px">' + esc(a.refreshTokenMasked) + '</td><td>' +
+      '<button class="btn btn-sm" onclick="copyAccountToken(\'' + jsStr(a.accountId) + '\',\'refresh\')" title="复制完整 refreshToken">' +
+      '<svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>复制</button></td></tr>');
+  }
+  if (a.accessTokenMasked) {
+    rows.push('<tr><td>Access Token</td><td class="mono" style="font-size:11px">' + esc(a.accessTokenMasked) + '</td><td>' +
+      '<button class="btn btn-sm" onclick="copyAccountToken(\'' + jsStr(a.accountId) + '\',\'access\')" title="复制完整 accessToken">' +
+      '<svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>复制</button></td></tr>');
+  }
+  rows.push('<tr><td>Token 到期</td><td class="mono" style="font-size:11px">' +
+    (a.expiresAt ? esc(fmtDateTime(a.expiresAt)) : '<span style="color:var(--text2)">未知（尚未获取）</span>') +
+    '</td><td></td></tr>');
+  rows.push('<tr><td>账号 ID</td><td class="mono" style="font-size:11px">' + esc(a.accountId) + '</td><td>' +
+    '<button class="btn btn-sm" onclick="copyText(jsIdValue(\'' + jsStr(a.accountId) + '\'))" title="复制账号 ID">' +
+    '<svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>复制</button></td></tr>');
+
+  return '<div class="section-title" style="font-size:12.5px;padding:14px 0 8px">凭据（默认脱敏）</div>' +
+    '<table><thead><tr><th style="width:140px">项目</th><th>值</th><th style="width:90px">操作</th></tr></thead><tbody>' +
+    rows.join('') + '</tbody></table>' +
+    '<div class="limit-note">完整 token 只在点击「复制」时进入剪贴板，不会显示在页面上。</div>';
+}
+
+function jsIdValue(v) { return v; }
+
+// copyAccountToken 取完整 token。密文按需从详情接口的 reveal=1 分支取，
+// 不随详情一起下发，避免任何一次常规刷新都让 token 经过浏览器。
+async function copyAccountToken(accountId, kind) {
+  try {
+    const d = await api('GET', '/accounts/detail?accountId=' + encodeURIComponent(accountId) + '&reveal=1');
+    const value = kind === 'refresh' ? d.data.refreshToken : d.data.accessToken;
+    if (!value) { toast('该账号没有可用的 ' + kind + ' token', 'error'); return; }
+    copyText(value);
+  } catch (e) { toast('读取 token 失败: ' + e.message, 'error'); }
 }
 
 async function clearCooldown(accountId, modelId) {
@@ -1272,24 +1484,50 @@ function closeAccountDetail() {
   modalAccountId = null;
 }
 
+// downloadAccounts 触发浏览器下载；ids 非空时只导出这些账号（服务端过滤）。
+async function downloadAccounts(ids, filename) {
+  let url = API + '/accounts/export';
+  if (ids && ids.length) url += '?ids=' + encodeURIComponent(ids.join(','));
+  const res = await fetch(url);
+  if (res.status === 401) {
+    window.location.href = '/admin/login';
+    return;
+  }
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const blob = await res.blob();
+  const objUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+}
+
+// 默认「导出全部」，与服务端行为一致。
 async function exportAccounts() {
   try {
-    const res = await fetch(API + '/accounts/export');
-    if (res.status === 401) {
-      window.location.href = '/admin/login';
-      return;
-    }
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'cline-accounts-' + new Date().toISOString().slice(0, 10) + '.json';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast('已导出全部账号', 'success');
+    await downloadAccounts(null, 'cline-accounts-' + new Date().toISOString().slice(0, 10) + '.json');
+    toast('已导出全部账号（' + accountList.length + ' 个）', 'success');
+  } catch (e) { toast('导出失败: ' + e.message, 'error'); }
+}
+
+async function exportSelectedAccounts() {
+  const ids = Array.from(accountSelected);
+  if (ids.length === 0) { toast('请先勾选要导出的账号（或用「导出全部」）', 'error'); return; }
+  try {
+    await downloadAccounts(ids, 'cline-accounts-selected-' + ids.length + '.json');
+    toast('已导出选中账号（' + ids.length + ' 个）', 'success');
+  } catch (e) { toast('导出失败: ' + e.message, 'error'); }
+}
+
+async function exportOneAccount(accountId) {
+  const account = accountList.find(a => a.accountId === accountId);
+  const name = (account && account.email ? account.email : accountId).replace(/[^\w.@-]/g, '_');
+  try {
+    await downloadAccounts([accountId], 'cline-account-' + name + '.json');
+    toast('已导出账号 ' + (account && account.email ? account.email : accountId), 'success');
   } catch (e) { toast('导出失败: ' + e.message, 'error'); }
 }
 
@@ -2095,6 +2333,259 @@ async function loadConfig() {
   } catch (e) { /* ignore */ }
 }
 
+
+// ========== 上游配置 ==========
+// 服务端语义：Upstreams 为空 + 无排除项 = 自动模式（不注入任何渠道偏好）。
+let upstreamModels = [];    // 可配置的模型清单
+let upstreamEntries = [];   // 已保存的配置
+let upstreamEditing = null; // 弹层正在编辑的模型 ID
+
+async function loadUpstreams() {
+  const tbody = _('upstreamTableBody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">加载中...</td></tr>';
+  try {
+    const d = await api('GET', '/upstreams');
+    upstreamModels = d.data.models || [];
+    upstreamEntries = d.data.upstreams || [];
+    renderUpstreamModelSelect();
+    renderUpstreamTable();
+  } catch (e) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">加载失败：' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function renderUpstreamModelSelect() {
+  const sel = _('upstreamModelSelect');
+  if (!sel) return;
+  const prev = sel.value;
+  const costLabel = { free: '免费', pass: 'Pass', custom: '自定义' };
+  sel.innerHTML = '<option value="">— 选择模型 —</option>' + upstreamModels.map(m =>
+    '<option value="' + attr(m.id) + '">' + esc(m.id) + '（' + esc(costLabel[m.cost] || m.cost || '未知') + '）</option>'
+  ).join('');
+  if (prev) sel.value = prev;
+}
+
+function upstreamModeLabel(e) {
+  if (!e.upstreams || e.upstreams.length === 0) {
+    return e.exclude && e.exclude.length
+      ? '<span class="status cooldown"><span class="status-dot cooldown"></span>自动（排除 ' + e.exclude.length + '）</span>'
+      : '<span class="status active"><span class="status-dot active"></span>自动</span>';
+  }
+  return e.pinMode === 'preferred'
+    ? '<span class="status active"><span class="status-dot active"></span>优先+回退</span>'
+    : '<span class="status disabled"><span class="status-dot disabled"></span>严格钉住</span>';
+}
+
+function renderUpstreamTable() {
+  const tbody = _('upstreamTableBody');
+  if (!tbody) return;
+  const cnt = _('upstreamCount');
+  if (cnt) cnt.textContent = upstreamEntries.length ? '共 ' + upstreamEntries.length + ' 条' : '';
+  if (upstreamEntries.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">还没有配置——所有模型都在自动模式（推荐）</td></tr>';
+    return;
+  }
+  tbody.innerHTML = upstreamEntries.map(e => {
+    const ups = (e.upstreams || []).length
+      ? (e.upstreams || []).map(u => '<span class="chip">' + esc(u) + '</span>').join('')
+      : '<span style="color:var(--text2);font-size:12px">由网关自动选择</span>';
+    const alias = [];
+    if (e.redirect) alias.push('→ <span class="mono" style="font-size:11px">' + esc(e.redirect) + '</span>');
+    if ((e.aliases || []).length) alias.push((e.aliases || []).map(a => '<span class="chip">' + esc(a) + '</span>').join(''));
+    const pipe = e.pipeline
+      ? '<span class="mono" style="font-size:11px">' + esc(e.pipeline) + '</span>'
+      : '<span style="color:var(--text2);font-size:12px">未探测</span>';
+    return '<tr>' +
+      '<td class="mono" style="font-size:11px">' + esc(e.modelId) + '</td>' +
+      '<td>' + upstreamModeLabel(e) + '</td>' +
+      '<td>' + ups + '</td>' +
+      '<td>' + (alias.length ? alias.join(' ') : '<span style="color:var(--text2);font-size:12px">-</span>') + '</td>' +
+      '<td>' + pipe + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn btn-sm" onclick="openUpstreamModal(\'' + jsStr(e.modelId) + '\')" title="编辑"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg></button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteUpstream(\'' + jsStr(e.modelId) + '\')" title="删除配置（回到自动模式）"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>' +
+      '</td></tr>';
+  }).join('');
+}
+
+// 探测：把结果直接摊在页面上，包含渠道清单、管道与「实际命中」。
+async function probeUpstream() {
+  const modelId = _('upstreamModelSelect').value;
+  if (!modelId) { toast('请先选择模型', 'error'); return; }
+  const box = _('probeResult');
+  box.innerHTML = '<div class="section-body" style="padding:10px 0"><div class="loading"></div> 正在探测 ' + esc(modelId) + '…（会向网关发一到两次极小的请求）</div>';
+  try {
+    const d = await api('POST', '/upstreams/probe', { modelId: modelId });
+    const r = d.data;
+    const chips = (r.available || []).map(u =>
+      '<button class="btn btn-sm" style="margin:2px" onclick="pinChannelFromProbe(\'' + jsStr(modelId) + '\',\'' + jsStr(u) + '\')" title="把该模型钉到这个渠道">' + esc(u) + '</button>'
+    ).join('');
+    let html = '<div class="section-body" style="padding:10px 0">' +
+      '<div class="meta-row">' +
+        '<span>管道 <b>' + esc(r.pipeline || '未知') + '</b></span>' +
+        '<span>实际命中 <b>' + esc(r.provider || '-') + '</b></span>' +
+        '<span>耗时 <b>' + (r.latencyMs || 0) + ' ms</b></span>' +
+        (r.upstreamModel && r.upstreamModel !== r.modelId ? '<span>转发为 <b class="mono">' + esc(r.upstreamModel) + '</b></span>' : '') +
+      '</div>';
+    if (r.note) html += '<div class="limit-note">' + esc(r.note) + '</div>';
+    if ((r.available || []).length) {
+      html += '<div style="margin-top:10px"><div style="color:var(--text2);font-size:12px;margin-bottom:6px">' +
+        '可用渠道（' + r.available.length + '，点击即钉住）：</div>' + chips + '</div>';
+    }
+    if ((r.fallbacks || []).length) {
+      html += '<div style="margin-top:8px;color:var(--text2);font-size:12px">网关排的候选顺序：' +
+        (r.fallbacks || []).map(u => '<span class="chip">' + esc(u) + '</span>').join('') + '</div>';
+    }
+    html += '</div>';
+    box.innerHTML = html;
+    loadUpstreams();
+  } catch (e) {
+    box.innerHTML = '<div class="section-body" style="padding:10px 0"><div class="empty">探测失败：' + esc(e.message) + '</div></div>';
+  }
+}
+
+// 探测结果里点一个渠道 = 直接钉住它（写入并落盘）。
+async function pinChannelFromProbe(modelId, upstream) {
+  try {
+    await api('POST', '/upstreams/save', {
+      modelId: modelId, upstreams: [upstream], exclude: [], pinMode: 'strict'
+    });
+    toast(modelId + ' 已钉住 → ' + upstream, 'success');
+    loadUpstreams();
+  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+}
+
+function editUpstreamModel() {
+  const modelId = _('upstreamModelSelect').value;
+  if (!modelId) { toast('请先选择模型', 'error'); return; }
+  openUpstreamModal(modelId);
+}
+
+async function openUpstreamModal(modelId) {
+  upstreamEditing = modelId;
+  const modal = _('upstreamModal');
+  modal.classList.add('open');
+  _('upstreamModalTitle').textContent = '配置上游';
+  _('upstreamModalSub').innerHTML = '<span class="mono">' + esc(modelId) + '</span>';
+  _('upstreamModalBody').innerHTML = '<div class="empty">加载中...</div>';
+
+  const entry = upstreamEntries.find(e => e.modelId === modelId) || {};
+  const known = entry.available || [];
+  // 已钉的渠道即使不在已知清单里也要显示，否则用户看不到自己配过什么。
+  const pinned = entry.upstreams || [];
+  const options = Array.from(new Set([...pinned, ...known])).filter(Boolean).sort();
+  const pinnedHtml = options.length
+    ? options.map(u => {
+        const checked = pinned.includes(u) ? ' checked' : '';
+        const tag = known.includes(u) ? '' : ' <span style="color:var(--text2);font-size:11px">（未探测到）</span>';
+        return '<label style="display:inline-flex;align-items:center;gap:6px;margin:4px 10px 4px 0">' +
+          '<input type="checkbox" class="up-pin" value="' + attr(u) + '"' + checked + '>' + esc(u) + tag + '</label>';
+      }).join('')
+    : '<div class="empty" style="padding:10px 0">还没有渠道清单。先关掉这里点「探测渠道」，再回来勾选。</div>';
+
+  _('upstreamModalBody').innerHTML =
+    '<div class="form-row"><div class="field"><label>钉住模式</label>' +
+      '<select id="upPinMode">' +
+        '<option value="strict">严格钉住（只用勾选的渠道）</option>' +
+        '<option value="preferred">优先+回退（按勾选顺序优先，失败才换）</option>' +
+      '</select></div>' +
+      '<div class="field"><label>别名重定向（转发上游时替换成的真实模型 ID）</label>' +
+        '<input type="text" id="upRedirect" maxlength="200" placeholder="留空 = 不重定向，例如 deepseek/deepseek-v4-flash" value="' + attr(entry.redirect || '') + '">' +
+      '</div>' +
+    '</div>' +
+    '<div style="margin-top:6px"><label style="color:var(--text2);font-size:12px">上游渠道（不勾选任何一项 = 自动模式，推荐）</label>' +
+      '<div style="margin-top:6px">' + pinnedHtml + '</div></div>' +
+    '<div class="form-row" style="margin-top:12px"><div class="field"><label>别名（这些模型 ID 共用本配置，逗号分隔）</label>' +
+      '<input type="text" id="upAliases" maxlength="400" placeholder="例如 [cline]-deepseek-v4-flash, my-fast-model" value="' + attr((entry.aliases || []).join(', ')) + '">' +
+    '</div></div>' +
+    '<div class="limit-note">' +
+      '自动模式让网关自己挑渠道并在故障时转移，实测它会在 baseten(503) → fireworks(503) → alibaba(200) 之间自动跳转，' +
+      '比在代理层重试更有效。只有某个渠道持续限流、或你必须固定走某个渠道时才手动钉住。' +
+    '</div>' +
+    '<div class="form-actions" style="margin-top:12px">' +
+      '<button class="btn btn-primary" onclick="saveUpstreamConfig()"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg>保存</button>' +
+      '<button class="btn" onclick="probeFromModal()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>探测渠道</button>' +
+      '<button class="btn" onclick="closeUpstreamModal()">取消</button>' +
+    '</div>';
+
+  if (entry.pinMode) _('upPinMode').value = entry.pinMode;
+}
+
+function closeUpstreamModal() {
+  _('upstreamModal').classList.remove('open');
+  upstreamEditing = null;
+}
+
+// 在弹层里探测：刷新渠道清单后重新渲染弹层，并保留用户当前已填的内容。
+async function probeFromModal() {
+  if (!upstreamEditing) return;
+  const modelId = upstreamEditing;
+  const keep = readUpstreamForm();
+  _('upstreamModalBody').innerHTML = '<div class="empty"><div class="loading"></div> 正在探测 ' + esc(modelId) + '…</div>';
+  try {
+    await api('POST', '/upstreams/probe', { modelId: modelId });
+    await loadUpstreams();
+    await openUpstreamModal(modelId);
+    applyUpstreamForm(keep);
+  } catch (e) {
+    _('upstreamModalBody').innerHTML = '<div class="empty">探测失败：' + esc(e.message) + '</div>';
+  }
+}
+
+function readUpstreamForm() {
+  const pins = Array.from(document.querySelectorAll('.up-pin')).filter(el => el.checked).map(el => el.value);
+  return {
+    pins: pins,
+    pinMode: _('upPinMode') ? _('upPinMode').value : 'strict',
+    redirect: _('upRedirect') ? _('upRedirect').value : '',
+    aliases: _('upAliases') ? _('upAliases').value : ''
+  };
+}
+
+function applyUpstreamForm(form) {
+  if (!form) return;
+  document.querySelectorAll('.up-pin').forEach(el => { el.checked = form.pins.includes(el.value); });
+  if (_('upPinMode')) _('upPinMode').value = form.pinMode;
+  if (_('upRedirect')) _('upRedirect').value = form.redirect;
+  if (_('upAliases')) _('upAliases').value = form.aliases;
+}
+
+async function saveUpstreamConfig() {
+  if (!upstreamEditing) return;
+  const form = readUpstreamForm();
+  try {
+    await api('POST', '/upstreams/save', {
+      modelId: upstreamEditing,
+      upstreams: form.pins,
+      exclude: [],
+      pinMode: form.pinMode,
+      redirect: form.redirect.trim(),
+      aliases: form.aliases.split(',').map(s => s.trim()).filter(Boolean)
+    });
+    toast('已保存：' + upstreamEditing, 'success');
+    closeUpstreamModal();
+    loadUpstreams();
+  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+}
+
+async function deleteUpstream(modelId) {
+  if (!confirm('删除 ' + modelId + ' 的上游配置？该模型将回到自动模式。')) return;
+  try {
+    await api('POST', '/upstreams/delete', { modelId: modelId });
+    toast('已删除配置：' + modelId, 'success');
+    loadUpstreams();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+// 上游配置弹层：遮罩点击与 Esc 关闭（与账号详情同一套交互约定）。
+(() => {
+  const modal = _('upstreamModal');
+  if (!modal) return;
+  modal.addEventListener('click', e => { if (e.target === modal) closeUpstreamModal(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && modal.classList.contains('open')) closeUpstreamModal();
+  });
+})();
 // ========== 初始化 ==========
 loadStats();
 loadAccounts();
