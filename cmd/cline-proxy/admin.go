@@ -1235,7 +1235,7 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// GET /admin/api/models lists default and custom models.
+// GET /admin/api/models lists user-added models.
 // POST /admin/api/models adds a custom model with body: { id }.
 func handleAdminModels(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {

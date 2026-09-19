@@ -82,7 +82,7 @@ func TestPickAccountSkipsCoolingModel(t *testing.T) {
 	t.Cleanup(resetCooldowns)
 
 	now := time.Now()
-	// 池里只有一个账号（defaultModels 的行为不变）
+	// 池里只有一个账号。
 	p := loadPool()
 	poolMu.Lock()
 	p.Accounts = []*Account{{
@@ -240,6 +240,9 @@ func TestEffectiveModelMatchesUpstreamBody(t *testing.T) {
 	useTemporaryPool(t)
 	resetCooldowns()
 	t.Cleanup(resetCooldowns)
+	if _, err := addCustomModel("vendor/default"); err != nil {
+		t.Fatal(err)
+	}
 
 	// 客户端指定模型：完全采用客户端的值
 	params := map[string]any{"model": "vendor/explicit", "messages": []any{}}

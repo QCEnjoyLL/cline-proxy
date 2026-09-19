@@ -286,7 +286,7 @@ func TestAddCustomModelsPersistsOnceForWholeBatch(t *testing.T) {
 	}
 }
 
-// 批量添加的边界：批内重复、非法 id、内置模型重新启用、以及体积上限。
+// 批量添加的边界：批内重复、非法 id、模型重新添加、以及体积上限。
 func TestAddCustomModelsEdgeCases(t *testing.T) {
 	useTemporaryPool(t)
 
@@ -304,28 +304,31 @@ func TestAddCustomModelsEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("内置模型已启用时计入 skipped", func(t *testing.T) {
-		added, skipped, failed := addCustomModels([]string{defaultModel})
+	t.Run("已添加模型计入 skipped", func(t *testing.T) {
+		if _, err := addCustomModel("vendor/existing"); err != nil {
+			t.Fatal(err)
+		}
+		added, skipped, failed := addCustomModels([]string{"vendor/existing"})
 		if len(added) != 0 || len(skipped) != 1 || len(failed) != 0 {
 			t.Fatalf("added=%v skipped=%v failed=%v", added, skipped, failed)
 		}
 	})
 
-	t.Run("删除过的内置模型可批量重新启用", func(t *testing.T) {
+	t.Run("删除过的模型可批量重新添加", func(t *testing.T) {
 		useTemporaryPool(t)
-		if err := deleteCustomModel(defaultModel); err != nil {
-			t.Fatalf("先删除内置模型: %v", err)
+		if _, err := addCustomModel("vendor/readded"); err != nil {
+			t.Fatal(err)
 		}
-		added, skipped, failed := addCustomModels([]string{defaultModel, "vendor/x"})
+		if err := deleteCustomModel("vendor/readded"); err != nil {
+			t.Fatalf("先删除模型: %v", err)
+		}
+		added, skipped, failed := addCustomModels([]string{"vendor/readded", "vendor/x"})
 		if len(added) != 2 || len(skipped) != 0 || len(failed) != 0 {
 			t.Fatalf("added=%v skipped=%v failed=%v", added, skipped, failed)
 		}
-		p := loadPool()
-		poolMu.Lock()
-		disabled := modelDisabledLocked(p, defaultModel)
-		poolMu.Unlock()
-		if disabled {
-			t.Error("批量添加后内置模型仍处于禁用状态")
+		pool = nil
+		if models := allModels(); len(models) != 2 || models[0].ID != "vendor/readded" || models[1].ID != "vendor/x" {
+			t.Errorf("批量添加后模型未持久化: %v", models)
 		}
 	})
 

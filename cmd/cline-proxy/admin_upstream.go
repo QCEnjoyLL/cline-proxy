@@ -26,22 +26,21 @@ type upstreamEntry struct {
 type upstreamModelOption struct {
 	ID       string `json:"id"`
 	Cost     string `json:"cost"`     // free / pass / custom，面板据此分组与配色
-	Provider string `json:"provider"` // 内置条目的展示用供应商标识
+	Provider string `json:"provider"` // 展示用供应商标识
 	Custom   bool   `json:"custom"`
 }
 
 // GET /admin/api/upstreams
 //
 // 一次返回面板需要的全部数据：可配置的模型清单 + 已保存的配置。
-// 合并成一次请求，是因为模型清单有内置/自定义/禁用三种来源，
-// 分开取会让两份列表存在不同步的窗口。
+// 模型清单只包含用户已添加的模型。
 func handleAdminUpstreams(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
 	}
 
-	// 已启用的模型：与 /v1/models 用同一个来源，禁用（已删除）的内置模型不出现。
+	// 已添加的模型：与 /v1/models 用同一个来源。
 	options := make([]upstreamModelOption, 0, 16)
 	for _, model := range allModels() {
 		options = append(options, upstreamModelOption{

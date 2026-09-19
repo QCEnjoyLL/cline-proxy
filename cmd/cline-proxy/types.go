@@ -20,12 +20,11 @@ type Account struct {
 }
 
 type AccountPool struct {
-	Accounts       []*Account `json:"accounts"`
-	CurrentIdx     int        `json:"currentIdx"`
-	Keys           []string   `json:"keys,omitempty"`
-	CustomModels   []string   `json:"customModels,omitempty"`
-	DisabledModels []string   `json:"disabledModels,omitempty"`
-	DefaultModel   string     `json:"defaultModel,omitempty"`
+	Accounts     []*Account `json:"accounts"`
+	CurrentIdx   int        `json:"currentIdx"`
+	Keys         []string   `json:"keys,omitempty"`
+	CustomModels []string   `json:"customModels,omitempty"`
+	DefaultModel string     `json:"defaultModel,omitempty"`
 	// ProxyConfig 保存轮换策略和自定义请求头；旧文件缺省时使用内置配置。
 	ProxyConfig *proxyConfigData `json:"proxyConfig,omitempty"`
 	// CooldownMinutes 是「账号×模型」级 429 冷却的自动恢复时长（分钟）。

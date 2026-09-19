@@ -198,6 +198,10 @@ func TestCatalogSnapshotCachingAndStaleFallback(t *testing.T) {
 //
 // 这里预置缓存，让非 force 的请求直接命中缓存——测试不打真实网络。
 func TestAdminModelCatalogHandlerShape(t *testing.T) {
+	useTemporaryPool(t)
+	if _, err := addCustomModel("vendor/one"); err != nil {
+		t.Fatal(err)
+	}
 	resetCatalogCache()
 	t.Cleanup(resetCatalogCache)
 
@@ -233,9 +237,8 @@ func TestAdminModelCatalogHandlerShape(t *testing.T) {
 	if !body.Data.Cached {
 		t.Error("命中缓存时 cached 应为 true")
 	}
-	// installed 至少要包含内置模型，否则前端无从判断「已启用」。
-	if len(body.Data.Installed) == 0 {
-		t.Error("installed 不应为空")
+	if len(body.Data.Installed) != 1 || body.Data.Installed[0] != "vendor/one" {
+		t.Errorf("installed 应仅包含用户添加的模型: %v", body.Data.Installed)
 	}
 
 	// 只允许 GET。

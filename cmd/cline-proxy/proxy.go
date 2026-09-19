@@ -22,7 +22,6 @@ import (
 )
 
 const (
-	defaultModel           = "cline-free/glm-5.2"
 	defaultMaxTokens       = 128000
 	defaultReasoningEffort = "high"
 	// maxPendingToolCalls 是单个流里同时跟踪的工具调用数上限。
@@ -360,7 +359,11 @@ func startProxy(port int) error {
 	fmt.Printf("  http://%s\n", addr)
 	fmt.Printf("  http://%s/v1\n", addr)
 	fmt.Println("  API Key: any value")
-	fmt.Printf("  Model:   %s\n", getDefaultModel())
+	if model := getDefaultModel(); model != "" {
+		fmt.Printf("  Model:   %s\n", model)
+	} else {
+		fmt.Println("  Model:   not configured; add a model in the admin panel or specify model in requests")
+	}
 	fmt.Printf("  Accounts: %d total, %d active\n", len(loadPool().Accounts), activeCount)
 	fmt.Println(strings.Repeat("=", 58))
 
@@ -459,7 +462,7 @@ func cleanMessages(messages []any) []any {
 // 冷却键（pickAccount / cooldowns.mark）与请求体（buildUpstreamBody）
 // 都要用它，否则两处漂移会导致冷却标记到一个永远不会被查询的 key。
 func effectiveModel(params map[string]any) string {
-	if m, ok := params["model"].(string); ok && m != "" {
+	if m, ok := params["model"].(string); ok && strings.TrimSpace(m) != "" {
 		return m
 	}
 	return getDefaultModel()
@@ -545,6 +548,10 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 			"no active accounts available. Use --login or admin API to add accounts")
 	}
 
+	if model == "" {
+		return nil, newUpstreamError(http.StatusBadRequest, "invalid_request_error",
+			"model is required: specify a model in the request or add a default model in the admin panel")
+	}
 	token, err := ensureAccountToken(acc)
 	if err != nil {
 		// 我方账号凭据出了问题，不是客户端的错：给 502，别让他怀疑自己的 Key。

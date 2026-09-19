@@ -164,9 +164,6 @@ func handleAdminModelCatalog(w http.ResponseWriter, r *http.Request) {
 	res := catalogSnapshot(r.URL.Query().Get("refresh") == "1")
 
 	// installed 是当前已启用的模型 ID，面板靠它标记「已启用」。
-	// 注意这份清单与内置模型是两个命名空间（清单里全是 vendor/model 形式的 slug，实测
-	// 444 条里没有一条 cline-free/* 或 cline-pass/*），所以它一般只对「用户从这份清单里
-	// 加过的模型」生效——但仍然必须带上：否则前端没法把已启用的卡片标出来。
 	installed := make([]string, 0)
 	for _, m := range allModels() {
 		installed = append(installed, m.ID)

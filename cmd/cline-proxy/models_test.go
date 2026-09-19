@@ -24,7 +24,7 @@ func useTemporaryPool(t *testing.T) {
 	})
 }
 
-func TestCustomModelsPreserveDefaultsAndPersist(t *testing.T) {
+func TestCustomModelsPersistWithoutPresets(t *testing.T) {
 	useTemporaryPool(t)
 
 	id, err := addCustomModel("  openai/gpt-4.1-nano  ")
@@ -37,13 +37,8 @@ func TestCustomModelsPreserveDefaultsAndPersist(t *testing.T) {
 
 	pool = nil // Force a reload from disk.
 	models := allModels()
-	if len(models) != len(defaultModels)+1 {
-		t.Fatalf("got %d models, want %d", len(models), len(defaultModels)+1)
-	}
-	for i, defaultModel := range defaultModels {
-		if models[i].ID != defaultModel.ID || models[i].Custom {
-			t.Fatalf("default model %d was not preserved: %+v", i, models[i])
-		}
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
 	}
 	custom := models[len(models)-1]
 	if custom.ID != id || !custom.Custom {
@@ -57,9 +52,6 @@ func TestCustomModelsPreserveDefaultsAndPersist(t *testing.T) {
 func TestCustomModelRejectsDuplicatesAndInvalidIDs(t *testing.T) {
 	useTemporaryPool(t)
 
-	if _, err := addCustomModel(defaultModels[0].ID); !errors.Is(err, errModelExists) {
-		t.Fatalf("adding default model error = %v, want errModelExists", err)
-	}
 	if _, err := addCustomModel("provider/model"); err != nil {
 		t.Fatalf("add first custom model: %v", err)
 	}
@@ -114,10 +106,13 @@ func TestNormalizeModelIDRejectsSyntaxBreakingRunes(t *testing.T) {
 	}
 }
 
-func TestDeletePresetModelsAllowedAndRestorable(t *testing.T) {
+func TestFormerPresetModelCanBeAddedRemovedAndRestored(t *testing.T) {
 	useTemporaryPool(t)
 
-	preset := defaultModels[0].ID
+	preset := "cline-free/glm-5.2"
+	if _, err := addCustomModel(preset); err != nil {
+		t.Fatalf("add former preset as a user model: %v", err)
+	}
 	if err := deleteCustomModel(preset); err != nil {
 		t.Fatalf("delete preset model: %v", err)
 	}
@@ -157,15 +152,18 @@ func TestDeletePresetModelsAllowedAndRestorable(t *testing.T) {
 	if err := deleteCustomModel("provider/model"); err != nil {
 		t.Fatalf("delete custom model: %v", err)
 	}
-	if got := len(allModels()); got != len(defaultModels) {
-		t.Fatalf("got %d models after deletion, want %d", got, len(defaultModels))
+	if got := len(allModels()); got != 1 {
+		t.Fatalf("got %d models after deletion, want 1", got)
 	}
 }
 
-func TestDeletePresetModelsPersistsAcrossReload(t *testing.T) {
+func TestDeletedModelsStayDeletedAcrossReload(t *testing.T) {
 	useTemporaryPool(t)
 
-	preset := defaultModels[0].ID
+	preset := "provider/model"
+	if _, err := addCustomModel(preset); err != nil {
+		t.Fatal(err)
+	}
 	if err := deleteCustomModel(preset); err != nil {
 		t.Fatalf("delete preset model: %v", err)
 	}
@@ -193,9 +191,11 @@ func TestDeletePresetModelsPersistsAcrossReload(t *testing.T) {
 func TestDeleteDefaultModelFallsBackToAvailableModel(t *testing.T) {
 	useTemporaryPool(t)
 
-	// Default points at the first preset; deleting it must fall back to the
-	// next available model instead of the deleted one.
-	preset := defaultModels[0].ID
+	// The first user-added model is the fallback until a default is selected.
+	preset := "provider/first"
+	if _, _, failed := addCustomModels([]string{preset, "provider/second"}); len(failed) != 0 {
+		t.Fatalf("seed models: %v", failed)
+	}
 	if got := getDefaultModel(); got != preset {
 		t.Fatalf("initial default model = %q, want %q", got, preset)
 	}
@@ -225,25 +225,25 @@ func TestCustomModelChangesRollBackWhenPersistenceFails(t *testing.T) {
 	if got := len(loadPool().CustomModels); got != 0 {
 		t.Fatalf("failed add left %d custom models in memory", got)
 	}
-	if err := setDefaultModel(defaultModels[1].ID); !errors.Is(err, errModelStorage) {
+	poolPath = originalPath
+	if _, _, failed := addCustomModels([]string{"provider/model", "provider/other"}); len(failed) != 0 {
+		t.Fatalf("seed models: %v", failed)
+	}
+	if err := setDefaultModel("provider/model"); err != nil {
+		t.Fatal(err)
+	}
+	poolPath = t.TempDir()
+	if err := setDefaultModel("provider/other"); !errors.Is(err, errModelStorage) {
 		t.Fatalf("default model storage error = %v, want errModelStorage", err)
 	}
-	if got := getDefaultModel(); got != defaultModel {
+	if got := getDefaultModel(); got != "provider/model" {
 		t.Fatalf("failed default update was not rolled back: %q", got)
 	}
 
-	poolPath = originalPath
-	if _, err := addCustomModel("provider/model"); err != nil {
-		t.Fatalf("add custom model: %v", err)
-	}
-	if err := setDefaultModel("provider/model"); err != nil {
-		t.Fatalf("set custom default model: %v", err)
-	}
-	poolPath = t.TempDir()
 	if err := deleteCustomModel("provider/model"); !errors.Is(err, errModelStorage) {
 		t.Fatalf("delete storage error = %v, want errModelStorage", err)
 	}
-	if got := loadPool().CustomModels; len(got) != 1 || got[0] != "provider/model" {
+	if got := loadPool().CustomModels; len(got) != 2 || got[0] != "provider/model" || got[1] != "provider/other" {
 		t.Fatalf("failed delete did not roll back: %v", got)
 	}
 	if got := getDefaultModel(); got != "provider/model" {
@@ -278,7 +278,7 @@ func TestAdminModelHandlers(t *testing.T) {
 	if err := json.NewDecoder(listResponse.Body).Decode(&body); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if !body.Success || len(body.Data.Models) != len(defaultModels)+1 {
+	if !body.Success || len(body.Data.Models) != 1 {
 		t.Fatalf("unexpected list response: %+v", body)
 	}
 
@@ -291,8 +291,8 @@ func TestAdminModelHandlers(t *testing.T) {
 
 func TestDefaultModelSelectionPersistsAndDrivesRequests(t *testing.T) {
 	useTemporaryPool(t)
-	if got := getDefaultModel(); got != defaultModel {
-		t.Fatalf("initial default model = %q, want %q", got, defaultModel)
+	if got := getDefaultModel(); got != "" {
+		t.Fatalf("initial default model = %q, want empty", got)
 	}
 	if _, err := addCustomModel("provider/custom-model"); err != nil {
 		t.Fatalf("add custom model: %v", err)
@@ -327,12 +327,12 @@ func TestDefaultModelValidationAndCustomDeletionFallback(t *testing.T) {
 	if err := deleteCustomModel("provider/custom-model"); err != nil {
 		t.Fatalf("delete custom model: %v", err)
 	}
-	if got := getDefaultModel(); got != defaultModel {
-		t.Fatalf("default after custom deletion = %q, want %q", got, defaultModel)
+	if got := getDefaultModel(); got != "" {
+		t.Fatalf("default after custom deletion = %q, want empty", got)
 	}
 	pool = nil
-	if got := getDefaultModel(); got != defaultModel {
-		t.Fatalf("persisted fallback = %q, want %q", got, defaultModel)
+	if got := getDefaultModel(); got != "" {
+		t.Fatalf("persisted fallback = %q, want empty", got)
 	}
 }
 

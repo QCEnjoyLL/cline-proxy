@@ -14,7 +14,7 @@
 - 🔐 **双层鉴权**：后台登录会话与代理 API Key 相互独立
 - 📥 **多种账号导入方式**：OAuth、手动输入 Refresh Token、JSON 批量导入
 - 📤 **批量导出账号**：导出文件可直接重新批量导入
-- 🧠 **模型管理**：内置模型与自定义模型均可随时删除，删除后可通过添加恢复，支持选择默认模型
+- 🧠 **模型管理**：从模型库或手动添加模型，支持删除和选择默认模型
 - 🎯 **上游渠道配置**：指定每个模型走哪条上游渠道，或把别名重定向到真实模型 ID
 - 📄 **账号分页与选择性导出**：可自定义每页条数，支持全选、勾选导出、单账号导出
 - 📝 **System Prompt 覆盖**：通过 `override.md` 替换客户端系统提示词
@@ -196,12 +196,12 @@ docker compose logs --tail=100
 
 ### 🧠 模型管理
 
-- 内置模型与自定义模型一样，可以随时删除；删除后可在「添加模型」中重新添加以恢复
-- 可添加上游支持的自定义模型
+- 初始模型列表为空，请从「模型库」选择模型，或手动添加上游支持的模型 ID
 - 可通过下拉框选择默认模型
 - 自定义模型会出现在 `/v1/models` 和 `/models` 中
 - 客户端请求显式指定 `model` 时，优先使用客户端提供的模型
-- 删除当前默认模型时，默认模型会自动切换到剩余的第一个可用模型
+- 删除当前默认模型时，会自动切换到剩余的第一个模型；列表为空时默认模型清空
+- 未指定 `model` 且没有可用默认模型时，请求会提示需要指定模型
 
 #### 模型库
 
@@ -226,29 +226,6 @@ docker compose logs --tail=100
 | `GET` | `/admin/api/recommended-models` | 获取分组模型清单；加 `?refresh=1` 强制回源 |
 | `GET` | `/admin/api/model-catalog` | 获取「全部模型」清单（400+ 条）；加 `?refresh=1` 强制回源。面板默认折叠，展开时才调用 |
 | `POST` | `/admin/api/models/batch` | 批量添加模型，body `{"ids":["a","b"]}`；已存在的计入 `skipped`。整批只落盘一次，单次最多 1000 条 |
-
-内置模型：
-
-| 模型 ID | 类型 | 说明 |
-|---|---|---|
-| `cline-free/glm-5.2` | 免费 | 初始默认模型 |
-| `cline-pass/glm-5.2` | Pass | 需要对应订阅 |
-| `cline-pass/deepseek-v4-flash` | Pass | 需要对应订阅 |
-| `cline-pass/qwen3.7-max` | Pass | 需要对应订阅 |
-
-部分实测可用的额度模型：
-
-| 模型 ID | 状态 |
-|---|---|
-| `deepseek/deepseek-v4-pro` | ✅ 可用 |
-| `openai/gpt-4.1-nano` | ✅ 可用 |
-| `qwen/qwen3-235b-a22b` | ✅ 可用 |
-| `meta-llama/llama-4-maverick` | ✅ 可用 |
-| `deepseek/deepseek-v4-flash` | ⚠️ 可能返回空内容 |
-| `google/gemini-2.5-flash` | ⚠️ 可能返回空内容 |
-| `google/gemini-2.5-pro` | ⚠️ 可能返回空内容 |
-
-> 📌 模型可用性、额度消耗和订阅要求由上游决定，可能随时变化。
 
 ### 📝 System Prompt 覆盖
 
@@ -325,7 +302,7 @@ x-client-type: cline-cli
 ```text
 Base URL: http://127.0.0.1:3457/v1
 API Key:  <管理后台生成的 Key>
-Model:    cline-free/glm-5.2
+Model:    <在模型库中选择或手动添加的模型 ID>
 ```
 
 请求端点：
@@ -339,7 +316,7 @@ POST /v1/chat/completions
 ```text
 Base URL: http://127.0.0.1:3457/v1
 API Key:  <管理后台生成的 Key>
-Model:    cline-free/glm-5.2
+Model:    <在模型库中选择或手动添加的模型 ID>
 ```
 
 请求端点：
@@ -367,13 +344,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.6.2` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
+| `1.7.0` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.6.2   # 对应版本发布后可固定使用
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.0   # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

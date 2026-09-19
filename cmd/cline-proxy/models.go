@@ -32,44 +32,10 @@ type modelDefinition struct {
 	Custom   bool   `json:"custom"`
 }
 
-var defaultModels = []modelDefinition{
-	{ID: defaultModel, Provider: "zai", Cost: "free", Status: "active"},
-	{ID: "cline-pass/glm-5.2", Provider: "zai", Cost: "pass", Status: "active"},
-	{ID: "cline-pass/deepseek-v4-flash", Provider: "deepseek", Cost: "pass", Status: "active"},
-	{ID: "cline-pass/qwen3.7-max", Provider: "qwen", Cost: "pass", Status: "active"},
-}
-
-// isDefaultModelID reports whether id is one of the built-in models.
-func isDefaultModelID(id string) bool {
-	for _, model := range defaultModels {
-		if model.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// modelDisabledLocked reports whether a built-in model has been deleted
-// (disabled) by the user. Callers must hold poolMu.
-func modelDisabledLocked(p *AccountPool, id string) bool {
-	for _, disabledID := range p.DisabledModels {
-		if disabledID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// firstAvailableModelLocked returns the first model the pool can use: the
-// first non-disabled built-in model, or the first custom model when every
-// built-in model has been deleted. Returns "" when no models remain.
+// firstAvailableModelLocked returns the first user-added model,
+// or "" when no models remain.
 // Callers must hold poolMu.
 func firstAvailableModelLocked(p *AccountPool) string {
-	for _, model := range defaultModels {
-		if !modelDisabledLocked(p, model.ID) {
-			return model.ID
-		}
-	}
 	if len(p.CustomModels) > 0 {
 		return p.CustomModels[0]
 	}
@@ -77,9 +43,6 @@ func firstAvailableModelLocked(p *AccountPool) string {
 }
 
 func modelExistsLocked(p *AccountPool, id string) bool {
-	if isDefaultModelID(id) && !modelDisabledLocked(p, id) {
-		return true
-	}
 	for _, customID := range p.CustomModels {
 		// 归一化只用于「新增」时把关。这里面对的是**已经存下来的**历史数据：
 		// 1.3.4 之前允许含 | 引号 等字符的 ID 直接入库，它们如今过不了
@@ -132,15 +95,8 @@ func allModels() []modelDefinition {
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
-	models := make([]modelDefinition, 0, len(defaultModels)+len(p.CustomModels))
-	seen := make(map[string]struct{}, len(defaultModels)+len(p.CustomModels))
-	for _, model := range defaultModels {
-		if modelDisabledLocked(p, model.ID) {
-			continue
-		}
-		seen[model.ID] = struct{}{}
-		models = append(models, model)
-	}
+	models := make([]modelDefinition, 0, len(p.CustomModels))
+	seen := make(map[string]struct{}, len(p.CustomModels))
 	for _, id := range p.CustomModels {
 		if _, ok := seen[id]; ok {
 			continue
@@ -212,27 +168,6 @@ func addCustomModel(id string) (string, error) {
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
-	// Built-in model: adding it back re-enables it after a deletion.
-	if isDefaultModelID(id) {
-		if !modelDisabledLocked(p, id) {
-			return "", errModelExists
-		}
-		original := append([]string(nil), p.DisabledModels...)
-		filtered := make([]string, 0, len(p.DisabledModels))
-		for _, disabledID := range p.DisabledModels {
-			if disabledID == id {
-				continue
-			}
-			filtered = append(filtered, disabledID)
-		}
-		p.DisabledModels = filtered
-		if err := savePoolLocked(); err != nil {
-			p.DisabledModels = original
-			return "", fmt.Errorf("%w: %v", errModelStorage, err)
-		}
-		return id, nil
-	}
-
 	for _, customID := range p.CustomModels {
 		if customID == id {
 			return "", errModelExists
@@ -266,7 +201,6 @@ func addCustomModels(ids []string) (added, skipped []string, failed map[string]s
 
 	// 先把这一批分类清楚，一个要改的都没有就不必落盘。
 	// 入参允许重复：同一批里出现两次时，第二个按「已存在」跳过（与逐个添加的语义一致）。
-	toEnable := make([]string, 0) // 需要重新启用的内置模型
 	toAppend := make([]string, 0) // 需要新增的自定义模型
 	seen := make(map[string]bool, len(ids))
 	for _, raw := range ids {
@@ -281,15 +215,6 @@ func addCustomModels(ids []string) (added, skipped []string, failed map[string]s
 		}
 		seen[id] = true
 
-		if isDefaultModelID(id) {
-			// 内置模型「已启用」时无需改动；被删除过（在 DisabledModels 里）才重新启用。
-			if modelDisabledLocked(p, id) {
-				toEnable = append(toEnable, id)
-			} else {
-				skipped = append(skipped, id)
-			}
-			continue
-		}
 		if containsString(p.CustomModels, id) {
 			skipped = append(skipped, id)
 			continue
@@ -297,44 +222,28 @@ func addCustomModels(ids []string) (added, skipped []string, failed map[string]s
 		toAppend = append(toAppend, id)
 	}
 
-	if len(toEnable) == 0 && len(toAppend) == 0 {
+	if len(toAppend) == 0 {
 		return added, skipped, failed
 	}
 
 	// 改内存，最后只写一次盘；写失败则把内存整体回滚（与 addCustomModel 一致）。
-	originalDisabled := append([]string(nil), p.DisabledModels...)
 	originalCustomLen := len(p.CustomModels)
-
-	if len(toEnable) > 0 {
-		filtered := make([]string, 0, len(p.DisabledModels))
-		for _, disabledID := range p.DisabledModels {
-			if !containsString(toEnable, disabledID) {
-				filtered = append(filtered, disabledID)
-			}
-		}
-		p.DisabledModels = filtered
-	}
 	p.CustomModels = append(p.CustomModels, toAppend...)
 
 	if err := savePoolLocked(); err != nil {
-		p.DisabledModels = originalDisabled
 		p.CustomModels = p.CustomModels[:originalCustomLen]
 		reason := fmt.Errorf("%w: %v", errModelStorage, err).Error()
-		for _, id := range toEnable {
-			failed[id] = reason
-		}
 		for _, id := range toAppend {
 			failed[id] = reason
 		}
 		return added, skipped, failed
 	}
 
-	added = append(added, toEnable...)
 	added = append(added, toAppend...)
 	return added, skipped, failed
 }
 
-// containsString 是给上面那两个小规模集合用的线性查找（内置模型只有几个）。
+// containsString reports whether list contains want.
 func containsString(list []string, want string) bool {
 	for _, v := range list {
 		if v == want {
@@ -352,25 +261,6 @@ func deleteCustomModel(id string) error {
 	p := loadPool()
 	poolMu.Lock()
 	defer poolMu.Unlock()
-
-	// Built-in model: deletion disables it; re-adding restores it.
-	if isDefaultModelID(id) {
-		if modelDisabledLocked(p, id) {
-			return errModelNotFound
-		}
-		original := append([]string(nil), p.DisabledModels...)
-		originalDefault := p.DefaultModel
-		p.DisabledModels = append(p.DisabledModels, id)
-		if p.DefaultModel == id {
-			p.DefaultModel = ""
-		}
-		if err := savePoolLocked(); err != nil {
-			p.DisabledModels = original
-			p.DefaultModel = originalDefault
-			return fmt.Errorf("%w: %v", errModelStorage, err)
-		}
-		return nil
-	}
 
 	// Custom model: remove it from the custom list.
 	original := append([]string(nil), p.CustomModels...)

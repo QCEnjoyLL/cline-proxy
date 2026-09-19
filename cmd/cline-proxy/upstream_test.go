@@ -320,6 +320,9 @@ func upstreamTestPool(t *testing.T) {
 
 func TestAdminUpstreamsListShape(t *testing.T) {
 	upstreamTestPool(t)
+	if _, err := addCustomModel("cline-free/deepseek-v4.1-flash"); err != nil {
+		t.Fatal(err)
+	}
 	pool.PerModel = map[string]ModelUpstream{
 		"cline-free/deepseek-v4.1-flash": {Upstreams: []string{"alibaba"}, Pipeline: pipelinePlanner},
 	}

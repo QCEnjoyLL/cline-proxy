@@ -21,7 +21,10 @@ func updateConfigForTest(body string) *httptest.ResponseRecorder {
 
 func TestProxyConfigSurvivesReload(t *testing.T) {
 	useTemporaryPool(t)
-	body := `{"strategy":"fill","headers":{"X-CLIENT-TYPE":"custom-client","X-Test":"saved"},"defaultModel":"` + defaultModels[1].ID + `","cooldownMinutes":12}`
+	if _, err := addCustomModel("provider/configured"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"strategy":"fill","headers":{"X-CLIENT-TYPE":"custom-client","X-Test":"saved"},"defaultModel":"provider/configured","cooldownMinutes":12}`
 	if rec := updateConfigForTest(body); rec.Code != http.StatusOK {
 		t.Fatalf("update status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -39,7 +42,7 @@ func TestProxyConfigSurvivesReload(t *testing.T) {
 	if cfg.Headers["User-Agent"] != defaultProxyConfig().Headers["User-Agent"] {
 		t.Fatal("partial headers update lost built-in headers")
 	}
-	if getDefaultModel() != defaultModels[1].ID || cooldownMinutes() != 12 {
+	if getDefaultModel() != "provider/configured" || cooldownMinutes() != 12 {
 		t.Fatal("model/cooldown settings did not survive reload")
 	}
 }
@@ -64,6 +67,9 @@ func TestProxyConfigRejectedUpdatePreservesAllSettings(t *testing.T) {
 			useTemporaryPool(t)
 			resetCooldowns()
 			t.Cleanup(resetCooldowns)
+			if _, _, failed := addCustomModels([]string{"provider/original", "provider/configured"}); len(failed) != 0 {
+				t.Fatalf("seed models: %v", failed)
+			}
 			if rec := updateConfigForTest(`{"strategy":"fill","headers":{"X-Test":"original"},"cooldownMinutes":12}`); rec.Code != http.StatusOK {
 				t.Fatalf("initial update: %s", rec.Body.String())
 			}
@@ -75,7 +81,7 @@ func TestProxyConfigRejectedUpdatePreservesAllSettings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			model := defaultModels[1].ID
+			model := "provider/configured"
 			wantStatus := http.StatusInternalServerError
 			if failure == "invalid-model" {
 				model = "missing/model"

@@ -736,7 +736,7 @@ html.theme-anim,html.theme-anim *{
 <div class="section">
   <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-check-circle"/></svg>已启用的模型</div>
   <div class="section-body">
-    <p style="color:var(--text2);margin-bottom:12px">默认模型始终保留；自定义模型会出现在 <span class="mono">/v1/models</span> 中。点击标签上的 <svg class="ic ic-inline" aria-hidden="true"><use href="#i-x"/></svg> 可移除。</p>
+    <p style="color:var(--text2);margin-bottom:12px">已添加的模型会出现在 <span class="mono">/v1/models</span> 中。点击标签上的 <svg class="ic ic-inline" aria-hidden="true"><use href="#i-x"/></svg> 可移除。</p>
     <div id="modelsList">加载中...</div>
   </div>
 </div>
@@ -894,7 +894,7 @@ html.theme-anim,html.theme-anim *{
       <button class="btn btn-primary" onclick="addCustomModel()"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>添加模型</button>
     </div>
     <p style="color:var(--text2);margin-bottom:10px">
-      默认模型始终保留；自定义模型会出现在 <span class="mono">/v1/models</span> 中。
+      已添加的模型会出现在 <span class="mono">/v1/models</span> 中。
       想从 Cline 官方清单里挑选，请到 <a href="#" onclick="switchTab('models');return false;" style="color:var(--accent)"> 模型库</a>。
     </p>
     <div class="models-tags" id="settingsModelsList">加载中...</div>
@@ -1819,6 +1819,13 @@ async function loadModels() {
     const select = _('settingDefModel');
     const selectedModel = select.dataset.selected || select.value;
     select.replaceChildren();
+    select.disabled = models.length === 0;
+    if (!models.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '请先添加模型';
+      select.appendChild(option);
+    }
     models.forEach(m => {
       const option = document.createElement('option');
       option.value = m.id;
@@ -1826,6 +1833,7 @@ async function loadModels() {
       select.appendChild(option);
     });
     if (models.some(m => m.id === selectedModel)) select.value = selectedModel;
+    select.dataset.selected = select.value;
     // 同一份模型清单渲染到两处：模型库页的「已启用的模型」与设置页的「手工添加模型」
     const renderTags = (container) => {
       container.innerHTML = '';
@@ -1841,7 +1849,7 @@ async function loadModels() {
         tag.appendChild(remove);
         container.appendChild(tag);
       });
-      if (!models.length) container.innerHTML = '<div class="empty">\u6682\u65e0\u6a21\u578b</div>';
+      if (!models.length) container.innerHTML = '<div class="empty">暂无模型，请从模型库或手动添加</div>';
     };
     renderTags(_('modelsList'));
     renderTags(_('settingsModelsList'));
@@ -2321,10 +2329,8 @@ async function loadConfig() {
     if (c.version) _('settingVersion').value = c.version;
     if (c.strategy) _('settingStrategy').value = c.strategy;
     if (c.cooldownMinutes) _('settingCooldown').value = c.cooldownMinutes;
-    if (c.defaultModel) {
-      _('settingDefModel').dataset.selected = c.defaultModel;
-      _('settingDefModel').value = c.defaultModel;
-    }
+    _('settingDefModel').dataset.selected = c.defaultModel || '';
+    _('settingDefModel').value = c.defaultModel || '';
     if (c.headers) {
       const tbody = _('headersTableBody');
       tbody.innerHTML = Object.entries(c.headers).map(([k, v]) =>
