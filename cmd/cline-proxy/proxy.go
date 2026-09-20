@@ -158,20 +158,10 @@ func startProxy(port int) error {
 	// 尝试登录**才打印——而 README 让用户用 `docker compose logs | grep
 	// ADMIN_PASSWORD` 找密码，那时日志里还什么都没有，等于把人锁在门外。
 	loadAdminCredentials()
-	p := loadPool()
-	activeCount := 0
-	for _, a := range p.Accounts {
-		if a != nil && a.Status == "active" && !a.Disabled {
-			// Try to pre-warm tokens
-			if a.AccessToken == "" || time.Now().UnixMilli() >= a.ExpiresAt {
-				if err := refreshAccountToken(a); err != nil {
-					log.Printf("  Pre-warm failed for %s: %v", truncateEmail(a.Email), err)
-					continue
-				}
-			}
-			activeCount++
-		}
-	}
+	loadPool()
+	// Refresh on first use so unavailable auth services cannot block the admin
+	// listener or startup health checks. Concurrent first requests share a refresh.
+	activeCount := snapshotAccountStats().Active
 	log.Printf("Loaded %d active accounts from pool", activeCount)
 
 	freePort(port)
@@ -468,14 +458,25 @@ func effectiveModel(params map[string]any) string {
 	return getDefaultModel()
 }
 
+func tokenLimit(value any) (int, bool) {
+	switch n := value.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 func buildUpstreamBody(params map[string]any, stream bool) map[string]any {
 	sessionID := fmt.Sprintf("sess_%d", time.Now().UnixMilli())
 
 	maxTokens := defaultMaxTokens
-	if mt, ok := params["max_tokens"].(float64); ok {
-		maxTokens = int(mt)
-	} else if mt, ok := params["max_completion_tokens"].(float64); ok {
-		maxTokens = int(mt)
+	if mt, ok := tokenLimit(params["max_tokens"]); ok {
+		maxTokens = mt
+	} else if mt, ok := tokenLimit(params["max_completion_tokens"]); ok {
+		maxTokens = mt
 	}
 
 	model := effectiveModel(params)
@@ -597,8 +598,8 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 	if resp.StatusCode == 401 {
 		resp.Body.Close()
 		// Refresh token and retry
-		if err := refreshAccountToken(acc); err == nil {
-			token = acc.AccessToken
+		if refreshed, refreshErr := accountToken(acc, true, token); refreshErr == nil {
+			token = refreshed
 			// 必须重建请求：原 req.Body 已被首次发送消费并关闭，
 			// 复用同一个 *http.Request 重试会因 body 长度不符而失败，
 			// 导致 token 刷新后仍然报错（旧实现在这里永远重试不成功）。
@@ -617,17 +618,19 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 			if resp.StatusCode == 401 {
 				resp.Body.Close()
 				poolMu.Lock()
-				acc.Status = "expired"
+				if acc.AccessToken == token {
+					acc.Status = "expired"
+					if saveErr := savePoolLocked(); saveErr != nil {
+						log.Printf("Persist expired account: %v", saveErr)
+					}
+				}
 				poolMu.Unlock()
 				return nil, newUpstreamError(http.StatusBadGateway, "account_error",
 					"account %s token expired permanently", truncateEmail(acc.Email))
 			}
 		} else {
-			poolMu.Lock()
-			acc.Status = "expired"
-			poolMu.Unlock()
 			return nil, newUpstreamError(http.StatusBadGateway, "account_error",
-				"account %s refresh failed: %v", truncateEmail(acc.Email), err)
+				"account %s refresh failed: %v", truncateEmail(acc.Email), refreshErr)
 		}
 	}
 
@@ -658,7 +661,9 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 	poolMu.Lock()
 	bumpAccountUsage(acc, time.Now())
 	poolMu.Unlock()
-	savePool()
+	if err := savePool(); err != nil {
+		log.Printf("Persist account usage: %v", err)
+	}
 	return resp, nil
 }
 
@@ -1025,7 +1030,7 @@ func anthropicToOpenAI(req anthropicReq) map[string]any {
 		case []any:
 			textParts := []string{}
 			var toolCalls []any
-			var toolResult *map[string]any
+			var toolResults []any
 
 			for _, block := range c {
 				if b, ok := block.(map[string]any); ok {
@@ -1060,7 +1065,7 @@ func anthropicToOpenAI(req anthropicReq) map[string]any {
 							"content":      b["content"],
 							"tool_call_id": b["tool_use_id"],
 						}
-						toolResult = &tr
+						toolResults = append(toolResults, tr)
 					}
 				}
 			}
@@ -1072,8 +1077,11 @@ func anthropicToOpenAI(req anthropicReq) map[string]any {
 					"tool_calls": toolCalls,
 				}
 				msgs = append(msgs, msg)
-			} else if m.Role == "user" && toolResult != nil {
-				msgs = append(msgs, *toolResult)
+			} else if m.Role == "user" && len(toolResults) > 0 {
+				msgs = append(msgs, toolResults...)
+				if len(textParts) > 0 {
+					msgs = append(msgs, map[string]any{"role": "user", "content": strings.Join(textParts, "\n")})
+				}
 			} else {
 				content := strings.Join(textParts, "\n")
 				msgs = append(msgs, map[string]any{"role": m.Role, "content": content})
@@ -1246,11 +1254,6 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		out = normalizeOpenAIResponse(out)
 		anthropicResp := openAIToAnthropic(out)
-
-		if tc, ok := getNested(out, "choices", 0, "message", "tool_calls").([]any); ok && len(tc) > 0 {
-			anthropicResp["content"] = []any{}
-			anthropicResp["stop_reason"] = "tool_use"
-		}
 
 		writeJSON(w, http.StatusOK, anthropicResp)
 	}

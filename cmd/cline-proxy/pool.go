@@ -96,6 +96,10 @@ func loadPool() *AccountPool {
 
 	cfg := defaultProxyConfig()
 	if p.ProxyConfig != nil {
+		if p.ProxyConfig.HeadersComplete {
+			cfg.Headers = make(map[string]string)
+			cfg.HeadersComplete = true
+		}
 		switch p.ProxyConfig.Strategy {
 		case "round_robin", "fill", "random":
 			cfg.Strategy = p.ProxyConfig.Strategy
@@ -315,27 +319,37 @@ func savePoolLocked() error {
 	return writePoolSnapshot(data)
 }
 
-func addAccount(acc *Account) {
+func addAccount(acc *Account) error {
 	p := loadPool()
 	poolMu.Lock()
+	defer poolMu.Unlock()
+	previous := p.Accounts
 	p.Accounts = append(p.Accounts, acc)
-	poolMu.Unlock()
-	savePool()
+	if err := savePoolLocked(); err != nil {
+		p.Accounts = previous
+		return err
+	}
+	return nil
 }
 
-func removeAccount(accountID string) bool {
+func removeAccount(accountID string) (bool, error) {
 	p := loadPool()
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
 	for i, a := range p.Accounts {
 		if a.AccountID == accountID {
-			p.Accounts = append(p.Accounts[:i], p.Accounts[i+1:]...)
-			savePoolLocked()
-			return true
+			previous := p.Accounts
+			p.Accounts = append(append([]*Account{}, p.Accounts[:i]...), p.Accounts[i+1:]...)
+			if err := savePoolLocked(); err != nil {
+				p.Accounts = previous
+				return true, err
+			}
+			cooldowns.clearAccount(accountID)
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func getAccountByID(accountID string) *Account {
@@ -351,31 +365,73 @@ func getAccountByID(accountID string) *Account {
 	return nil
 }
 
-// refreshAccountToken 刷新账号 token 并落盘。
-//
-// 网络请求在 poolMu 之外，字段写入在 poolMu 之内：savePool 自己会取 poolMu，
-// 所以必须先解锁再落盘（持锁调用 savePool 会自锁死）。
-func refreshAccountToken(acc *Account) error {
-	resp, err := refreshClineToken(acc.RefreshToken)
-	if err != nil {
-		poolMu.Lock()
-		acc.Status = "expired"
-		poolMu.Unlock()
-		savePool()
-		return fmt.Errorf("token refresh failed: %w", err)
-	}
+type accountRefresh struct {
+	done  chan struct{}
+	token string
+	err   error
+}
 
+// One refresh per account at a time. Network I/O never holds poolMu.
+// rejectedToken avoids refreshing twice when an older request returns a late 401.
+func accountToken(acc *Account, force bool, rejectedToken string) (string, error) {
 	poolMu.Lock()
-	acc.AccessToken = "workos:" + resp.Data.AccessToken
-	if resp.Data.RefreshToken != "" {
-		acc.RefreshToken = resp.Data.RefreshToken
+	if pending := acc.refresh; pending != nil {
+		poolMu.Unlock()
+		<-pending.done
+		return pending.token, pending.err
 	}
-	acc.ExpiresAt = parseExpiry(resp.Data.ExpiresAt) - 60000
-	acc.Status = "active"
+	if acc.tokenSavePending {
+		if err := savePoolLocked(); err != nil {
+			poolMu.Unlock()
+			return "", fmt.Errorf("persist refreshed credentials: %w", err)
+		}
+		acc.tokenSavePending = false
+	}
+	cached := acc.AccessToken != "" && time.Now().UnixMilli() < acc.ExpiresAt
+	if cached && (!force || (rejectedToken != "" && rejectedToken != acc.AccessToken)) {
+		token := acc.AccessToken
+		poolMu.Unlock()
+		return token, nil
+	}
+	pending := &accountRefresh{done: make(chan struct{})}
+	acc.refresh = pending
+	rt := acc.RefreshToken
 	poolMu.Unlock()
+	resp, err := refreshClineToken(rt)
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if err != nil {
+		pending.err = fmt.Errorf("token refresh failed: %w", err)
+		var authErr *refreshError
+		if errors.As(err, &authErr) && authErr.permanent() {
+			acc.Status = "expired"
+			if saveErr := savePoolLocked(); saveErr != nil {
+				pending.err = errors.Join(pending.err, saveErr)
+			}
+		}
+	} else {
+		acc.AccessToken = "workos:" + resp.Data.AccessToken
+		if resp.Data.RefreshToken != "" {
+			acc.RefreshToken = resp.Data.RefreshToken
+		}
+		acc.ExpiresAt = parseExpiry(resp.Data.ExpiresAt) - 60000
+		acc.Status = "active"
+		pending.token = acc.AccessToken
+		if saveErr := savePoolLocked(); saveErr != nil {
+			// Rotation already happened upstream: retain the new credential and retry
+			// persistence before using it again, never roll back to an invalid token.
+			acc.tokenSavePending = true
+			pending.err = fmt.Errorf("persist refreshed credentials: %w", saveErr)
+		}
+	}
+	acc.refresh = nil
+	close(pending.done)
+	return pending.token, pending.err
+}
 
-	savePool()
-	return nil
+func refreshAccountToken(acc *Account) error {
+	_, err := accountToken(acc, true, "")
+	return err
 }
 
 // pickAccount 从池中选一个可用账号。
@@ -426,34 +482,14 @@ func pickAccount(modelID string) *Account {
 		p.CurrentIdx = (p.CurrentIdx + 1) % len(active)
 	}
 
-	// CurrentIdx 变了要落盘，但**磁盘 I/O 必须放在池锁之外**：这个函数在每个
-	// 代理请求上都会被调用，而池锁是所有请求共享的——持锁写盘会让所有并发请求
-	// 排队等磁盘，上游一慢就把锁的放大效应放得很大。
-	// 做法与 savePool 一致：锁内序列化（拿到的是一致快照），锁外写。
-	data, err := marshalPool()
+	// The cursor is persisted with successful usage/config changes. Picking an
+	// account does not need another whole-pool serialization and disk write.
 	poolMu.Unlock()
-
-	if err == nil {
-		if werr := writePoolSnapshot(data); werr != nil {
-			log.Printf("Failed to persist accounts after picking an account: %v", werr)
-		}
-	}
 	return acc
 }
 
 func ensureAccountToken(acc *Account) (string, error) {
-	poolMu.Lock()
-	cached := acc.AccessToken != "" && time.Now().UnixMilli() < acc.ExpiresAt
-	poolMu.Unlock()
-	if cached {
-		return acc.AccessToken, nil
-	}
-
-	if err := refreshAccountToken(acc); err != nil {
-		return "", err
-	}
-
-	return acc.AccessToken, nil
+	return accountToken(acc, false, "")
 }
 
 // cooldownMinutes 返回当前生效的冷却时长（分钟），带默认值兜底。
@@ -472,15 +508,11 @@ func cooldownMinutes() int {
 func setCooldownMinutes(m int) error {
 	p := loadPool()
 	poolMu.Lock()
+	defer poolMu.Unlock()
 	prev := p.CooldownMinutes
 	p.CooldownMinutes = m
-	poolMu.Unlock()
-
-	if err := savePool(); err != nil {
-		// 回滚也要在锁内：池锁外的写入会与 marshal 竞争。
-		poolMu.Lock()
+	if err := savePoolLocked(); err != nil {
 		p.CooldownMinutes = prev
-		poolMu.Unlock()
 		return err
 	}
 	return nil
@@ -633,7 +665,9 @@ func addAccountFromDeviceAuth() (*Account, error) {
 		CreatedAt:    time.Now(),
 	}
 
-	addAccount(acc)
+	if err := addAccount(acc); err != nil {
+		return nil, fmt.Errorf("save account: %w", err)
+	}
 	fmt.Printf("  Account added! Email: %s\n", email)
 	return acc, nil
 }

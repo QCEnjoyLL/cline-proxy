@@ -1806,7 +1806,7 @@ async function saveHeaders() {
   });
   if (hasEmpty) { toast('存在有值无键的行，已忽略', 'info'); }
   try {
-    const d = await api('POST', '/config/update', { headers });
+    const d = await api('POST', '/config/update', { headers, replaceHeaders: true });
     toast('请求头已保存', 'success');
     _('headerSaveResult').innerHTML =
       '<div style="color:var(--green);font-size:12px"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> 已保存 ' + Object.keys(d.data.headers).length + ' 个请求头</div>';

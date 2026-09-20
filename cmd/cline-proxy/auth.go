@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,8 +16,8 @@ import (
 )
 
 const (
-	workosClientID       = "client_01K3A541FN8TA3EPPHTD2325AR"
-	workosDeviceAuthURL  = "https://api.workos.com/user_management/authorize/device"
+	workosClientID        = "client_01K3A541FN8TA3EPPHTD2325AR"
+	workosDeviceAuthURL   = "https://api.workos.com/user_management/authorize/device"
 	workosAuthenticateURL = "https://api.workos.com/user_management/authenticate"
 )
 
@@ -210,24 +214,52 @@ func registerWithCline(workosAccess, workosRefresh string) (*clineAuthResp, erro
 	return &c, nil
 }
 
+type refreshError struct {
+	status int
+	code   string
+}
+
+func (e *refreshError) Error() string { return fmt.Sprintf("cline refresh failed: %d", e.status) }
+func (e *refreshError) permanent() bool {
+	return e.status == 401 || e.status == 403 || e.code == "invalid_grant"
+}
+
 func refreshClineToken(refreshToken string) (*clineRefreshResp, error) {
 	body := map[string]string{
 		"refreshToken": refreshToken,
 		"grantType":    "refresh_token",
 	}
-	resp, err := httpPostJSON(clineAPIBase+"/auth/refresh", body)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", clineAPIBase+"/auth/refresh", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cline refresh: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("cline refresh failed: %d", resp.StatusCode)
+		var failure struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&failure)
+		return nil, &refreshError{status: resp.StatusCode, code: failure.Error}
 	}
 
 	var c clineRefreshResp
-	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&c); err != nil {
 		return nil, fmt.Errorf("cline refresh decode: %w", err)
+	}
+	if c.Data.AccessToken == "" {
+		return nil, fmt.Errorf("cline refresh returned no access token")
 	}
 	return &c, nil
 }

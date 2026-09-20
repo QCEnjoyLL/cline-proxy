@@ -48,11 +48,8 @@ func TestBodyTooLargeStatusMapping(t *testing.T) {
 	}
 }
 
-// pickAccount 必须在落盘时带上更新后的 CurrentIdx。
-//
-// 背景：为了不把磁盘 I/O 放在池锁里，pickAccount 改成了「锁内序列化、锁外写盘」。
-// 这种重构很容易顺手把落盘整段漏掉，所以专门盯一下。
-func TestPickAccountPersistsCurrentIdx(t *testing.T) {
+// Picking only advances the in-memory cursor; the next normal save includes it.
+func TestPickAccountDefersCursorPersistence(t *testing.T) {
 	useTemporaryPool(t)
 	resetCooldowns()
 	t.Cleanup(resetCooldowns)
@@ -68,8 +65,19 @@ func TestPickAccountPersistsCurrentIdx(t *testing.T) {
 		})
 	}
 
+	before, err := os.ReadFile(poolPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if acc := pickAccount("vendor/m"); acc == nil {
 		t.Fatal("pickAccount 返回 nil")
+	}
+	after, err := os.ReadFile(poolPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("picking an account should not write the pool")
+	}
+	if err := savePool(); err != nil {
+		t.Fatal(err)
 	}
 
 	data, err := os.ReadFile(poolPath)

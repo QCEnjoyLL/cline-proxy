@@ -160,7 +160,11 @@ docker compose logs --tail=100
 
 ## 🖥️ 管理后台
 
+登录请求最多 16 KiB，每个直连 IP 在 5 分钟内最多连续尝试 10 次，成功登录后清零；触发限制时返回 `429`。反向代理部署时，限制按代理的连接 IP 计算，不信任客户端提供的转发 IP 请求头。
+
 ### 👤 账号管理
+
+删除全部账号只清空账号和对应冷却记录，保留 API Key、模型库及上游配置。账号凭据在首次请求时按需刷新，启动后台不再等待逐个刷新；临时网络故障不会将账号永久标记为过期。批量导入会保存上游轮换后的最新凭据。
 
 后台支持以下导入方式：
 
@@ -233,7 +237,7 @@ docker compose logs --tail=100
 
 ### 📨 自定义请求头
 
-在 **设置 → 请求头配置** 中可添加转发给上游的请求头，例如：
+在 **设置 → 请求头配置** 中可添加转发给上游的请求头；保存以当前表格为准，删除的请求头在重启后也不会恢复。例如：
 
 ```text
 x-client-type: cline-cli
@@ -344,13 +348,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.7.2` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
+| `1.7.3` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.2   # 对应版本发布后可固定使用
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.3   # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

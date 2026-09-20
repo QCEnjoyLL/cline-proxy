@@ -88,6 +88,11 @@ func newAdminSession() string {
 	}
 	token := hex.EncodeToString(b)
 	adminSessionsMu.Lock()
+	for session, expiry := range adminSessions {
+		if time.Now().After(expiry) {
+			delete(adminSessions, session)
+		}
+	}
 	adminSessions[token] = time.Now().Add(adminSessionTTL)
 	adminSessionsMu.Unlock()
 	return token
@@ -183,11 +188,26 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	loginIP := remoteLoginIP(r)
+	if !adminLoginAttempts.allow(loginIP, time.Now()) {
+		w.Header().Set("Retry-After", "300")
+		writeAPI(w, http.StatusTooManyRequests, apiResponse{Error: "登录尝试过于频繁，请稍后重试"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxLoginBodyBytes)
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer controller.SetReadDeadline(time.Time{})
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeAPI(w, bodyTooLargeStatus(err), apiResponse{Error: "invalid or oversized login request"})
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid request"})
 		return
 	}
@@ -199,6 +219,7 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusUnauthorized, apiResponse{Error: "用户名或密码错误"})
 		return
 	}
+	adminLoginAttempts.clear(loginIP)
 
 	token := newAdminSession()
 	if token == "" {
@@ -464,7 +485,10 @@ func handleAdminAccountAdd(w http.ResponseWriter, r *http.Request) {
 		acc.RefreshToken = resp.Data.RefreshToken
 	}
 
-	addAccount(acc)
+	if err := addAccount(acc); err != nil {
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "save account: " + err.Error()})
+		return
+	}
 	// 用 truncateEmail 保持与请求路径日志一致：容器日志的可见范围通常比
 	// 管理面板宽，不该在里面出现完整账号邮箱。
 	log.Printf("Account added via API: %s", truncateEmail(req.Email))
@@ -506,7 +530,10 @@ func handleAdminAccountDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if removeAccount(req.AccountID) {
+	found, err := removeAccount(req.AccountID)
+	if err != nil {
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "delete account: " + err.Error()})
+	} else if found {
 		writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "Account deleted"})
 	} else {
 		writeAPI(w, http.StatusNotFound, apiResponse{Error: "Account not found"})
@@ -586,7 +613,12 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 			Status:       "active",
 			CreatedAt:    time.Now(),
 		}
-		addAccount(acc)
+		if err := addAccount(acc); err != nil {
+			oauthSessionsMu.Lock()
+			state.Done, state.Success, state.Error = true, false, "save account: "+err.Error()
+			oauthSessionsMu.Unlock()
+			return
+		}
 
 		oauthSessionsMu.Lock()
 		state.Done = true
@@ -713,7 +745,13 @@ func handleSSOImport(w http.ResponseWriter, r *http.Request) {
 				Status:       "active",
 				CreatedAt:    time.Now(),
 			}
-			addAccount(acc)
+			if resp.Data.RefreshToken != "" {
+				acc.RefreshToken = resp.Data.RefreshToken
+			}
+			if err := addAccount(acc); err != nil {
+				errors = append(errors, fmt.Sprintf("%s: save account: %v", email, err))
+				continue
+			}
 			imported++
 		}
 	}
@@ -784,7 +822,13 @@ func handleBatchImport(w http.ResponseWriter, r *http.Request) {
 			Status:       "active",
 			CreatedAt:    time.Now(),
 		}
-		addAccount(acc)
+		if resp.Data.RefreshToken != "" {
+			acc.RefreshToken = resp.Data.RefreshToken
+		}
+		if err := addAccount(acc); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: save account: %v", email, err))
+			continue
+		}
 		imported++
 	}
 
@@ -812,10 +856,16 @@ func handleAdminRefreshAll(w http.ResponseWriter, r *http.Request) {
 	poolMu.Lock()
 	accounts := append([]*Account(nil), p.Accounts...)
 	poolMu.Unlock()
+	failed := 0
 	for _, a := range accounts {
 		if err := refreshAccountToken(a); err != nil {
+			failed++
 			log.Printf("Refresh failed for %s: %v", truncateEmail(a.Email), err)
 		}
+	}
+	if failed > 0 {
+		writeAPI(w, http.StatusBadGateway, apiResponse{Error: fmt.Sprintf("%d of %d accounts failed to refresh; see server log", failed, len(accounts))})
+		return
 	}
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "All tokens refreshed"})
 }
@@ -826,10 +876,18 @@ func handleAdminDeleteAll(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
 	}
+	p := loadPool()
 	poolMu.Lock()
-	pool = &AccountPool{Accounts: []*Account{}, Keys: []string{}}
+	previous, cursor := p.Accounts, p.CurrentIdx
+	p.Accounts, p.CurrentIdx = []*Account{}, 0
+	if err := savePoolLocked(); err != nil {
+		p.Accounts, p.CurrentIdx = previous, cursor
+		poolMu.Unlock()
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "delete accounts: " + err.Error()})
+		return
+	}
+	cooldowns.clearAll()
 	poolMu.Unlock()
-	savePool()
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "All accounts deleted"})
 }
 
@@ -865,16 +923,20 @@ func handleAdminAccountReset(w http.ResponseWriter, r *http.Request) {
 	// 实际仍会被 pickAccount 跳过最多一整个冷却周期。
 	// 写入共享账号对象必须持池锁：savePool 会在池锁内 marshal，
 	// 锁外改字段属于数据竞争。
-	poolMu.Lock()
-	acc.Status = "active"
-	acc.UsageCount = 0
-	acc.DailyUsageCount = 0
-	acc.DailyUsageDate = ""
-	poolMu.Unlock()
 	if err := refreshAccountToken(acc); err != nil {
 		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "reset failed: " + err.Error()})
 		return
 	}
+	poolMu.Lock()
+	previousTotal, previousDaily, previousDate := acc.UsageCount, acc.DailyUsageCount, acc.DailyUsageDate
+	acc.UsageCount, acc.DailyUsageCount, acc.DailyUsageDate = 0, 0, ""
+	if err := savePoolLocked(); err != nil {
+		acc.UsageCount, acc.DailyUsageCount, acc.DailyUsageDate = previousTotal, previousDaily, previousDate
+		poolMu.Unlock()
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "save reset: " + err.Error()})
+		return
+	}
+	poolMu.Unlock()
 	cooldowns.clearAccount(req.AccountID)
 
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "Account reset"})
@@ -900,14 +962,12 @@ func setAccountDisabled(accountID string, disabled bool) (bool, error) {
 	poolMu.Lock()
 	prev := acc.Disabled // 记录旧值：取反回滚在「重复禁用」时会写反
 	acc.Disabled = disabled
-	poolMu.Unlock()
-
-	if err := savePool(); err != nil {
-		poolMu.Lock()
+	if err := savePoolLocked(); err != nil {
 		acc.Disabled = prev
 		poolMu.Unlock()
 		return true, err
 	}
+	poolMu.Unlock()
 
 	if !disabled {
 		// 启用：清掉该账号全部冷却，让它真正回到轮询
@@ -999,8 +1059,9 @@ func handleAdminCooldowns(w http.ResponseWriter, r *http.Request) {
 }
 
 type proxyConfigData struct {
-	Strategy string            `json:"strategy"`
-	Headers  map[string]string `json:"headers"`
+	Strategy        string            `json:"strategy"`
+	Headers         map[string]string `json:"headers"`
+	HeadersComplete bool              `json:"headersComplete,omitempty"`
 }
 
 // defaultCooldownMinutes 是冷却时长的兜底值（分钟）。
@@ -1064,9 +1125,15 @@ func handleAdminGenerateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	p := loadPool()
 	poolMu.Lock()
+	previous := p.Keys
 	p.Keys = append(p.Keys, key)
+	if err := savePoolLocked(); err != nil {
+		p.Keys = previous
+		poolMu.Unlock()
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "save key: " + err.Error()})
+		return
+	}
 	poolMu.Unlock()
-	savePool()
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{"key": key}})
 }
 
@@ -1091,14 +1158,20 @@ func handleAdminDeleteKey(w http.ResponseWriter, r *http.Request) {
 	}
 	p := loadPool()
 	poolMu.Lock()
+	previous := append([]string(nil), p.Keys...)
 	for i, k := range p.Keys {
 		if k == req.Key {
 			p.Keys = append(p.Keys[:i], p.Keys[i+1:]...)
 			break
 		}
 	}
+	if err := savePoolLocked(); err != nil {
+		p.Keys = previous
+		poolMu.Unlock()
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "delete key: " + err.Error()})
+		return
+	}
 	poolMu.Unlock()
-	savePool()
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "Key deleted"})
 }
 
@@ -1132,6 +1205,7 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Strategy        string            `json:"strategy"`
 		Headers         map[string]string `json:"headers"`
+		ReplaceHeaders  bool              `json:"replaceHeaders"`
 		DefaultModel    *string           `json:"defaultModel"`
 		CooldownMinutes *int              `json:"cooldownMinutes"`
 	}
@@ -1184,11 +1258,16 @@ func handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// "concurrent map iteration and map write" 直接终止整个进程。
 	cur := getProxyConfig()
 	next := &proxyConfigData{
-		Strategy: cur.Strategy,
-		Headers:  make(map[string]string, len(cur.Headers)),
+		Strategy:        cur.Strategy,
+		Headers:         make(map[string]string, len(cur.Headers)),
+		HeadersComplete: cur.HeadersComplete,
 	}
-	for k, v := range cur.Headers {
-		next.Headers[k] = v
+	if req.ReplaceHeaders {
+		next.HeadersComplete = true
+	} else {
+		for k, v := range cur.Headers {
+			next.Headers[k] = v
+		}
 	}
 	if req.Strategy != "" {
 		next.Strategy = req.Strategy

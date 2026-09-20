@@ -3,6 +3,10 @@ package main
 import "time"
 
 type Account struct {
+	// Protected by poolMu; refresh results are shared by concurrent callers.
+	refresh          *accountRefresh
+	tokenSavePending bool
+
 	AccountID       string    `json:"accountId"`
 	Email           string    `json:"email"`
 	RefreshToken    string    `json:"refreshToken"`

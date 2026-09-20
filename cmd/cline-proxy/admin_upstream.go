@@ -154,13 +154,19 @@ func handleAdminUpstreamSave(w http.ResponseWriter, r *http.Request) {
 		entry.Available = prev.Available
 		entry.ProbedAt = prev.ProbedAt
 	}
+	previous, existed := p.PerModel[modelID]
 	p.PerModel[modelID] = entry
-	poolMu.Unlock()
-
-	if err := savePool(); err != nil {
+	if err := savePoolLocked(); err != nil {
+		if existed {
+			p.PerModel[modelID] = previous
+		} else {
+			delete(p.PerModel, modelID)
+		}
+		poolMu.Unlock()
 		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
 		return
 	}
+	poolMu.Unlock()
 
 	writeAPI(w, http.StatusOK, apiResponse{
 		Success: true,
@@ -192,14 +198,17 @@ func handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) {
 
 	p := loadPool()
 	poolMu.Lock()
-	_, existed := p.PerModel[modelID]
+	previous, existed := p.PerModel[modelID]
 	delete(p.PerModel, modelID)
-	poolMu.Unlock()
-
-	if err := savePool(); err != nil {
+	if err := savePoolLocked(); err != nil {
+		if existed {
+			p.PerModel[modelID] = previous
+		}
+		poolMu.Unlock()
 		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
 		return
 	}
+	poolMu.Unlock()
 	if !existed {
 		writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "no configuration for this model"})
 		return
