@@ -321,6 +321,10 @@ input:focus,textarea:focus,select:focus{
   outline:none;border-color:var(--accent);box-shadow:0 0 0 3.5px var(--accent-soft);
 }
 input:disabled,select:disabled{opacity:.6;cursor:not-allowed}
+#acctPageSize{width:auto;height:27px;padding:3px 6px;font-size:12px;border-radius:6px}
+.upstream-options{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:10px}
+.upstream-option{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;cursor:pointer}
+.upstream-option input{width:auto;margin:0;padding:0;flex:none}
 textarea{resize:vertical;min-height:88px;font-family:var(--mono);font-size:12px;line-height:1.55}
 .form-row{display:flex;gap:14px;align-items:flex-end;margin-bottom:14px}
 .form-row .field{flex:1;min-width:0}
@@ -774,7 +778,7 @@ html.theme-anim,html.theme-anim *{
       </div>
       <div style="display:flex;align-items:center;gap:6px">
         <label style="color:var(--text2);font-size:12px" for="acctPageSize">每页</label>
-        <select id="acctPageSize" onchange="setAccountPageSize(this.value)" style="width:auto">
+        <select id="acctPageSize" onchange="setAccountPageSize(this.value)">
           <option value="10">10</option><option value="20">20</option>
           <option value="50">50</option><option value="100">100</option>
         </select>
@@ -2489,7 +2493,7 @@ async function openUpstreamModal(modelId) {
     ? options.map(u => {
         const checked = pinned.includes(u) ? ' checked' : '';
         const tag = known.includes(u) ? '' : ' <span style="color:var(--text2);font-size:11px">（未探测到）</span>';
-        return '<label style="display:inline-flex;align-items:center;gap:6px;margin:4px 10px 4px 0">' +
+        return '<label class="upstream-option">' +
           '<input type="checkbox" class="up-pin" value="' + attr(u) + '"' + checked + '>' + esc(u) + tag + '</label>';
       }).join('')
     : '<div class="empty" style="padding:10px 0">还没有渠道清单。先关掉这里点「探测渠道」，再回来勾选。</div>';
@@ -2505,7 +2509,7 @@ async function openUpstreamModal(modelId) {
       '</div>' +
     '</div>' +
     '<div style="margin-top:6px"><label style="color:var(--text2);font-size:12px">上游渠道（不勾选任何一项 = 自动模式，推荐）</label>' +
-      '<div style="margin-top:6px">' + pinnedHtml + '</div></div>' +
+      '<div class="upstream-options">' + pinnedHtml + '</div></div>' +
     '<div class="form-row" style="margin-top:12px"><div class="field"><label>别名（这些模型 ID 共用本配置，逗号分隔）</label>' +
       '<input type="text" id="upAliases" maxlength="400" placeholder="例如 [cline]-deepseek-v4-flash, my-fast-model" value="' + attr((entry.aliases || []).join(', ')) + '">' +
     '</div></div>' +
