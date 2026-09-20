@@ -443,6 +443,11 @@ body.show-mdesc .mcard .mdesc{display:block}
 .mcard.installed{border-color:color-mix(in srgb,var(--green) 45%,transparent);background:var(--green-soft)}
 .mcard.installed .mname{color:var(--green)}
 .mcard.installed .mini.add{display:none}
+.mcard .mini:disabled{cursor:wait;opacity:.6}
+.mcheck-result{font-size:11px;line-height:1.5;max-width:42ch;overflow-wrap:anywhere;color:var(--text2)}
+.mcheck-result.ok{color:var(--green)}
+.mcheck-result:empty{display:none}
+.mcheck-result.error{color:var(--red)}
 .badge{
   flex:none;font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
   padding:2px 6px;border-radius:5px;background:var(--yellow-soft);color:var(--yellow);
@@ -712,6 +717,7 @@ html.theme-anim,html.theme-anim *{
     <p style="color:var(--text2);margin-bottom:12px">
       数据来自 <span class="mono">api.cline.bot</span>（由代理服务端抓取，浏览器直连会被 CORS 拦截）。
       点击分组标题右侧的「全部添加」可一键加入该组所有模型，点击单个模型卡片可单独添加，重复模型不会重复添加。
+      也可先点击「检测」：使用当前账号池发送一次小文本请求，可能消耗少量额度；结果仅代表本次请求。
     </p>
     <div id="recommendedGroups">加载中...</div>
   </div>
@@ -1926,6 +1932,7 @@ let mInstalled = [];      // 已启用（含默认）的模型 ID
 let mDataGroups = [];     // 最近一次取到的分组数据
 let mFetchedAt = 0;       // 数据抓取时间戳
 let mAutoTimer = null;    // 自动刷新定时器
+const mChecks = new Map(); // Results shared by duplicate cards during this page session.
 
 // ===== 底部「全部模型」折叠区 =====
 // 上游这份清单有 400+ 条（约 500 KB），只在用户展开时才抓取，也不参与上面的 10 分钟自动刷新。
@@ -1988,17 +1995,20 @@ function modelCardsHTML(models, installed) {
     const tags = (m.tags || []).filter(Boolean).map(t =>
       '<span class="badge">' + esc(t) + '</span>').join('');
     const name = m.name || m.id;
+    const check = modelCheckState(m.id);
     const tip = [name, m.id, m.description, '', has ? '已启用 · 点击复制 ID' : '点击添加'].filter(Boolean).join('\n');
-    return '<div class="mcard' + (has ? ' installed' : '') + '" role="button" tabindex="0"' +
+    return '<div class="mcard' + (has ? ' installed' : '') + '" role="group" tabindex="0"' +
       ' data-id="' + attr(m.id) + '" data-installed="' + (has ? '1' : '0') + '"' +
       ' title="' + attr(tip) + '">' +
       '<div class="mrow">' +
         '<span class="mname">' + esc(name) + '</span>' +
         (m.id && m.id !== name ? '<span class="mid">' + esc(m.id) + '</span>' : '') +
         tags +
-        '<span class="mini add" data-act="add" title="添加此模型">＋</span>' +
-        '<span class="mini" data-act="copy" title="复制模型 ID">⧉</span>' +
+        '<button type="button" class="mini check" data-act="check"' + (check.pending ? ' disabled' : '') + ' title="检测模型可用性，不会自动添加">' + check.button + '</button>' +
+        '<button type="button" class="mini add" data-act="add" title="添加此模型">＋</button>' +
+        '<button type="button" class="mini" data-act="copy" title="复制模型 ID">⧉</button>' +
       '</div>' +
+      '<div class="mcheck-result ' + check.kind + '" role="status" aria-live="polite">' + esc(check.text) + '</div>' +
       (m.description ? '<div class="mdesc">' + esc(m.description) + '</div>' : '') +
     '</div>';
   }).join('');
@@ -2048,7 +2058,8 @@ async function onModelCardClick(e) {
   const card = e.target.closest('.mcard');
   if (!card) return;
   const id = card.dataset.id || '';
-  const act = e.target.dataset.act;
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'check') { await checkLibraryModel(id); return; }
   if (act === 'copy' || card.dataset.installed === '1') {
     await copyText(id);
     return;
@@ -2058,12 +2069,45 @@ async function onModelCardClick(e) {
 
 async function onModelCardKey(e) {
   if (e.key !== 'Enter' && e.key !== ' ') return;
+  if (e.target.closest('button')) return;
   const card = e.target.closest('.mcard');
   if (!card) return;
   e.preventDefault();
   const id = card.dataset.id || '';
   if (card.dataset.installed === '1') { await copyText(id); return; }
   await addModels([id], '模型已添加');
+}
+
+function modelCheckState(id) {
+  const check = mChecks.get(id);
+  if (!check) return { button: '检测', text: '', kind: '', pending: false };
+  if (check.pending) return { button: '检测中…', text: '正在等待模型响应…', kind: '', pending: true };
+  return {
+    button: '重新检测', pending: false, kind: check.error ? 'error' : 'ok',
+    text: check.error ? '检测失败：' + check.error : '本次可用 · ' + (check.latencyMs / 1000).toFixed(1) + ' 秒'
+  };
+}
+
+function syncModelChecks() {
+  document.querySelectorAll('.mcard').forEach(card => {
+    const state = modelCheckState(card.dataset.id);
+    const button = card.querySelector('[data-act="check"]');
+    const result = card.querySelector('.mcheck-result');
+    if (button) { button.disabled = state.pending; button.textContent = state.button; }
+    if (result) { result.className = 'mcheck-result ' + state.kind; result.textContent = state.text; }
+  });
+}
+
+async function checkLibraryModel(id) {
+  if (!id || mChecks.get(id)?.pending) return;
+  mChecks.set(id, { pending: true });
+  syncModelChecks();
+  try {
+    const result = await runUpstreamProbe(id, '/models/check');
+    mChecks.set(id, { latencyMs: result.latencyMs || 0 });
+  } catch (e) {
+    mChecks.set(id, { error: e.message });
+  } finally { syncModelChecks(); }
 }
 
 // 一键添加一个分组的全部模型（已存在的由服务端跳过）
@@ -2443,13 +2487,13 @@ function renderUpstreamTable() {
 }
 
 // Long probes run on the server; each HTTP request stays short through proxies.
-async function runUpstreamProbe(modelId) {
-  const started = await api('POST', '/upstreams/probe', { modelId, async: true }, 15000);
+async function runUpstreamProbe(modelId, path = '/upstreams/probe') {
+  const started = await api('POST', path, { modelId, async: true }, 15000);
   const jobId = started.data && started.data.jobId;
   if (!jobId) throw new Error('服务端未返回探测任务，请确认已升级到最新版本');
   const deadline = Date.now() + 330000;
   while (Date.now() < deadline) {
-    const d = await api('GET', '/upstreams/probe?jobId=' + encodeURIComponent(jobId), null, 15000);
+    const d = await api('GET', path + '?jobId=' + encodeURIComponent(jobId), null, 15000);
     if (!d.data || !['running', 'done', 'failed'].includes(d.data.status)) throw new Error('探测任务响应格式不正确');
     if (d.data.status === 'done') {
       if (!d.data.result || typeof d.data.result !== 'object' || Array.isArray(d.data.result)) throw new Error('探测结果格式不正确');

@@ -107,7 +107,11 @@ func (s *probeJobStore) get(id string) (probeJob, bool) {
 }
 
 func handleAdminProbeStart(w http.ResponseWriter, modelID string) {
-	job, err := upstreamProbeJobs.start(modelID)
+	handleProbeStart(w, modelID, upstreamProbeJobs)
+}
+
+func handleProbeStart(w http.ResponseWriter, modelID string, jobs *probeJobStore) {
+	job, err := jobs.start(modelID)
 	if err != nil {
 		w.Header().Set("Retry-After", "2")
 		writeAPI(w, http.StatusTooManyRequests, apiResponse{Error: err.Error()})
@@ -118,13 +122,17 @@ func handleAdminProbeStart(w http.ResponseWriter, modelID string) {
 }
 
 func handleAdminProbeStatus(w http.ResponseWriter, r *http.Request) {
+	handleProbeStatus(w, r, upstreamProbeJobs)
+}
+
+func handleProbeStatus(w http.ResponseWriter, r *http.Request, jobs *probeJobStore) {
 	w.Header().Set("Cache-Control", "no-store")
 	id := r.URL.Query().Get("jobId")
 	if id == "" {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "jobId is required"})
 		return
 	}
-	job, ok := upstreamProbeJobs.get(id)
+	job, ok := jobs.get(id)
 	if !ok {
 		writeAPI(w, http.StatusNotFound, apiResponse{Error: "探测任务已过期或服务已重启，请重新探测"})
 		return

@@ -209,6 +209,9 @@ docker compose logs --tail=100
 
 #### 模型库
 
+推荐分组和「全部模型」中的每个模型都有 **检测** 按钮，无需先添加。检测通过当前账号池发送一次小文本请求，成功后显示响应耗时，失败后显示原因，可重新检测；不会自动添加模型或改动渠道配置。
+检测在后台执行，单次上游请求最长等待 90 秒。同一模型的并发检测会合并，结果仅保留在当前页面。检测可能消耗少量额度，仅说明本次账号、路由下的文本请求是否成功，不代表所有账号或图像、工具调用等能力均可用。
+
 「模型库」标签页直接展示 Cline 官方推荐模型清单（`api.cline.bot` 的 `recommended-models` 接口），按上游分组平铺：
 
 - **一键添加整个分组**：点击分组标题右侧的「全部添加」，把该组所有模型加入代理
@@ -351,13 +354,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.7.5` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
+| `1.7.6` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.5   # 对应版本发布后可固定使用
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.6   # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

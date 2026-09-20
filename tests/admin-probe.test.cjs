@@ -160,3 +160,64 @@ test('modal distinguishes metadata candidates from enumerated channels', async (
   assert.match(nodes.upstreamModalBody.innerHTML, /元数据候选，未验证可严格钉住/);
   assert.doesNotMatch(nodes.upstreamModalBody.innerHTML, /未探测到/);
 });
+
+test('availability button uses the check endpoint and never adds or copies a model', async () => {
+  let checks = 0;
+  const card = { dataset: { id: 'vendor/new', installed: '1' } };
+  const ctx = runtime(['onModelCardClick', 'onModelCardKey'], {
+    checkLibraryModel: async id => { assert.equal(id, 'vendor/new'); checks++; },
+    addModels: () => assert.fail('check must not add a model'),
+    copyText: () => assert.fail('check must not copy'),
+  });
+  const target = { closest: selector => selector === '.mcard' ? card : selector === 'button' ? {} : { dataset: { act: 'check' } } };
+  await ctx.onModelCardKey({ key: 'Enter', target, preventDefault: () => assert.fail('native button key should not be intercepted') });
+  await ctx.onModelCardClick({ target });
+  assert.equal(checks, 1);
+});
+
+test('availability check deduplicates clicks and synchronizes duplicate cards', async () => {
+  const cards = Array.from({length: 2}, () => {
+    const button = {}, result = {};
+    return { dataset: {id: 'model'}, button, result, querySelector: selector => selector === '.mcheck-result' ? result : button };
+  });
+  let finish, requests = 0;
+  const ctx = runtime(['modelCheckState', 'syncModelChecks', 'checkLibraryModel'], {
+    mChecks: new Map(), document: { querySelectorAll: () => cards },
+    runUpstreamProbe: (id, path) => { requests++; assert.equal(path, '/models/check'); return new Promise(resolve => { finish = resolve; }); },
+  });
+  const pending = ctx.checkLibraryModel('model');
+  await ctx.checkLibraryModel('model');
+  assert.equal(requests, 1);
+  for (const card of cards) assert.equal(card.button.disabled, true);
+  finish({latencyMs: 1200}); await pending;
+  for (const card of cards) {
+    assert.equal(card.button.disabled, false);
+    assert.match(card.result.textContent, /本次可用 · 1.2 秒/);
+  }
+  ctx.runUpstreamProbe = async () => { throw new Error('HTTP 429'); };
+  await ctx.checkLibraryModel('model');
+  assert.match(cards[0].result.textContent, /检测失败：HTTP 429/);
+  assert.equal(cards[0].button.textContent, '重新检测');
+});
+
+test('model cards show a check button before installation and escape failure messages', () => {
+  const escape = s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+  const ctx = runtime(['modelCheckState', 'modelCardsHTML'], {
+    mChecks: new Map([['model', {error: '<img src=x onerror=alert(1)>'}]]), esc: escape, attr: escape,
+  });
+  const markup = ctx.modelCardsHTML([{id: 'model'}], new Set());
+  assert.match(markup, /data-act="check"/);
+  assert.match(markup, /data-installed="0"/);
+  assert.match(markup, /&lt;img/);
+  assert.doesNotMatch(markup, /<img/);
+});
+
+test('availability polling remains on the model check endpoint', async () => {
+  const calls = [];
+  const ctx = runtime(['runUpstreamProbe'], {api: async (method, path) => {
+    calls.push(path);
+    return {data: method === 'POST' ? {jobId: 'check1'} : {status: 'done', result: {latencyMs: 10}}};
+  }});
+  await ctx.runUpstreamProbe('model', '/models/check');
+  assert.deepEqual(calls, ['/models/check', '/models/check?jobId=check1']);
+});
