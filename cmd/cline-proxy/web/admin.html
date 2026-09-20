@@ -448,6 +448,8 @@ body.show-mdesc .mcard .mdesc{display:block}
 .mcheck-result.ok{color:var(--green)}
 .mcheck-result:empty{display:none}
 .mcheck-result.error{color:var(--red)}
+.credit-value{border:0;background:none;color:inherit;font:inherit;font-variant-numeric:tabular-nums;white-space:nowrap;padding:3px 0;cursor:pointer}
+.credit-value:disabled{cursor:wait;opacity:.65}
 .badge{
   flex:none;font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
   padding:2px 6px;border-radius:5px;background:var(--yellow-soft);color:var(--yellow);
@@ -765,10 +767,10 @@ html.theme-anim,html.theme-anim *{
   <div class="section-body" style="padding:0">
     <table>
       <thead>
-        <tr><th style="width:34px"><input type="checkbox" id="acctSelectAll" onchange="toggleSelectAllAccounts(this.checked)" title="全选本页"></th><th>邮箱</th><th>状态</th><th>今日使用</th><th>总使用次数</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr>
+        <tr><th style="width:34px"><input type="checkbox" id="acctSelectAll" onchange="toggleSelectAllAccounts(this.checked)" title="全选本页"></th><th>邮箱</th><th>状态</th><th title="个人 Credit 余额，点击金额可刷新">Credit</th><th>今日使用</th><th>总使用次数</th><th>最后使用</th><th>创建时间</th><th>操作</th></tr>
       </thead>
       <tbody id="accountTableBody">
-        <tr><td colspan="8" class="empty">加载中...</td></tr>
+        <tr><td colspan="9" class="empty">加载中...</td></tr>
       </tbody>
     </table>
   </div>
@@ -1182,6 +1184,9 @@ let accountPage = 1;
 let accountPageTotal = 1;
 let accountPageSize = 10;
 const accountSelected = new Set();  // 勾选的 accountId，跨页保留以便「导出选中」
+const creditStates = new Map();
+let creditQueue = [];
+let creditRunning = 0;
 
 async function loadAccounts() {
   loadCooldowns(); // 冷却状态与账号列表一起刷新（两个独立请求，互不阻塞）
@@ -1202,7 +1207,7 @@ function renderAccountPage() {
   const tbody = _('accountTableBody');
   const total = accountList.length;
   if (total === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无账号，前往 <a href="#" onclick="switchTab(\'import\')" style="color:var(--accent);cursor:pointer">导入账号</a> 页添加</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无账号，前往 <a href="#" onclick="switchTab(\'import\')" style="color:var(--accent);cursor:pointer">导入账号</a> 页添加</td></tr>';
     updateAccountPager();
     return;
   }
@@ -1226,6 +1231,7 @@ function renderAccountPage() {
       '<td><input type="checkbox"' + checked + ' onchange="toggleAccountSelect(\'' + jsStr(a.accountId) + '\', this.checked)"></td>' +
       '<td>' + esc(a.email) + '</td>' +
       '<td>' + badge + '</td>' +
+      '<td class="mono" data-credit-id="' + attr(a.accountId) + '">' + creditCellHTML(a.accountId) + '</td>' +
       '<td>' + (a.dailyUsageCount || 0) + '</td>' +
       '<td>' + (a.usageCount || 0) + '</td>' +
       '<td class="mono" style="font-size:11px">' + lu + '</td>' +
@@ -1239,6 +1245,66 @@ function renderAccountPage() {
       '</td></tr>';
   }).join('');
   updateAccountPager();
+  queueVisibleCredits(pageRows);
+}
+
+function creditCellHTML(id) {
+  const state = creditStates.get(id) || {};
+  const known = typeof state.data?.balance === 'number' && Number.isFinite(state.data.balance);
+  const text = known ? state.data.balance.toFixed(4) : state.pending || state.queued ? '查询中…' : state.error ? '查询失败' : '—';
+  const title = (known ? '个人 Credit · 查询于 ' + fmtDateTime(state.data.checkedAt) + '。' : '') +
+    (state.error ? '查询失败：' + state.error + (known ? '（当前显示上次余额）' : '') + '。' : '') + '点击刷新余额';
+  return '<button type="button" class="credit-value"' + (state.pending || state.queued ? ' disabled' : '') +
+    ' title="' + attr(title) + '" onclick="requestAccountCredit(\'' + jsStr(id) + '\',true)">' + esc(text) + (known && state.error ? ' ⚠' : '') + '</button>';
+}
+
+function syncCreditViews() {
+  document.querySelectorAll('[data-credit-id]').forEach(el => { el.innerHTML = creditCellHTML(el.dataset.creditId); });
+}
+
+function queueVisibleCredits(rows) {
+  const visible = new Set(rows.map(a => a.accountId));
+  creditQueue = creditQueue.filter(item => {
+    if (visible.has(item.id) || item.id === modalAccountId || item.force) return true;
+    const state = creditStates.get(item.id);
+    if (state) state.queued = false;
+    return false;
+  });
+  rows.forEach(a => requestAccountCredit(a.accountId));
+}
+
+function requestAccountCredit(id, force = false) {
+  const state = creditStates.get(id) || {};
+  if (state.pending || state.queued) return;
+  if (!force && state.fetchedAt && Date.now() - state.fetchedAt < (state.error ? 10000 : 60000)) return;
+  state.queued = true;
+  creditStates.set(id, state);
+  creditQueue.push({ id, force });
+  syncCreditViews();
+  drainCreditQueue();
+}
+
+function drainCreditQueue() {
+  while (creditRunning < 3 && creditQueue.length) {
+    const item = creditQueue.shift();
+    const state = creditStates.get(item.id);
+    state.queued = false; state.pending = true;
+    creditRunning++;
+    fetchAccountCredit(item, state);
+  }
+}
+
+async function fetchAccountCredit(item, state) {
+  try {
+    const d = await api('GET', '/accounts/balance?accountId=' + encodeURIComponent(item.id) + (item.force ? '&refresh=1' : ''), null, 50000);
+    if (typeof d.data?.balance !== 'number' || !Number.isFinite(d.data.balance)) throw new Error('余额响应格式不正确');
+    state.data = d.data;
+    state.error = '';
+  } catch (e) { state.error = e.message; }
+  finally {
+    state.pending = false; state.fetchedAt = Date.now(); creditRunning--;
+    syncCreditViews(); drainCreditQueue();
+  }
 }
 
 // updateAccountPager 刷新分页控件与勾选统计，并同步「全选本页」的勾中态。
@@ -1394,10 +1460,14 @@ async function showAccountDetail(accountId) {
 
 async function refreshAccountDetail() {
   if (!modalAccountId) return;
+  const accountId = modalAccountId;
   try {
-    const d = await api('GET', '/accounts/detail?accountId=' + encodeURIComponent(modalAccountId));
+    const d = await api('GET', '/accounts/detail?accountId=' + encodeURIComponent(accountId));
+    if (modalAccountId !== accountId) return;
     renderAccountDetail(d.data);
+    requestAccountCredit(accountId);
   } catch (e) {
+    if (modalAccountId !== accountId) return;
     _('modalBody').innerHTML = '<div class="empty">读取账号详情失败：' + esc(e.message) + '</div>';
   }
 }
@@ -1417,6 +1487,8 @@ function renderAccountDetail(a) {
     '</div>';
 
   const limited = a.limited || [];
+  html += '<div class="meta-row"><span>Credit 余额（个人） <b data-credit-id="' + attr(a.accountId) + '">' + creditCellHTML(a.accountId) + '</b></span></div>' +
+    '<div class="limit-note" style="margin-bottom:12px">官方余额，点击金额可刷新；不等同于模型每日免费额度或订阅用量。</div>';
   html += '<div class="section-title" style="font-size:12.5px;padding:0 0 8px">已达上限的模型（' + limited.length + '）</div>';
   if (limited.length === 0) {
     html += '<div class="empty" style="padding:14px 0">该账号当前没有模型受限</div>';
@@ -1475,8 +1547,8 @@ function renderTokenSection(a) {
       '<button class="btn btn-sm" onclick="copyAccountToken(\'' + jsStr(a.accountId) + '\',\'access\')" title="复制完整 accessToken">' +
       '<svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>复制</button></td></tr>');
   }
-  rows.push('<tr><td>Token 到期</td><td class="mono" style="font-size:11px">' +
-    (a.expiresAt ? esc(fmtDateTime(a.expiresAt)) : '<span style="color:var(--text2)">未知（尚未获取）</span>') +
+  rows.push('<tr><td>Access Token 刷新时间</td><td class="mono" style="font-size:11px">' +
+    (a.expiresAt ? esc(fmtDateTime(a.expiresAt)) + (a.expiresAt <= Date.now() ? '（下次使用时自动刷新）' : '') : '<span style="color:var(--text2)">尚未获取，使用时自动获取</span>') +
     '</td><td></td></tr>');
   rows.push('<tr><td>账号 ID</td><td class="mono" style="font-size:11px">' + esc(a.accountId) + '</td><td>' +
     '<button class="btn btn-sm" onclick="copyText(jsIdValue(\'' + jsStr(a.accountId) + '\'))" title="复制账号 ID">' +
@@ -1485,7 +1557,7 @@ function renderTokenSection(a) {
   return '<div class="section-title" style="font-size:12.5px;padding:14px 0 8px">凭据（默认脱敏）</div>' +
     '<table><thead><tr><th style="width:140px">项目</th><th>值</th><th style="width:90px">操作</th></tr></thead><tbody>' +
     rows.join('') + '</tbody></table>' +
-    '<div class="limit-note">完整 token 只在点击「复制」时进入剪贴板，不会显示在页面上。</div>';
+    '<div class="limit-note">此时间是短期 Access Token 的刷新时间（比上游有效期提前约 1 分钟），不代表账号到期或每日额度重置。项目按需使用 Refresh Token 换新，不是每天定时刷新；若 Refresh Token 失效则需重新登录。完整 token 不会显示在页面上。</div>';
 }
 
 function jsIdValue(v) { return v; }

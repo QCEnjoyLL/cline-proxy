@@ -221,3 +221,66 @@ test('availability polling remains on the model check endpoint', async () => {
   await ctx.runUpstreamProbe('model', '/models/check');
   assert.deepEqual(calls, ['/models/check', '/models/check?jobId=check1']);
 });
+
+test('credit rendering distinguishes zero, unknown, and stale balance after failure', () => {
+  const escape = s => String(s).replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+  const states = new Map();
+  const ctx = runtime(['creditCellHTML'], { creditStates: states, esc: escape, attr: escape, jsStr: s => s, fmtDateTime: () => 'time' });
+  assert.match(ctx.creditCellHTML('id'), />—</);
+  states.set('id', {data: {balance: 0, checkedAt: 1}});
+  assert.match(ctx.creditCellHTML('id'), />0.0000</);
+  states.set('id', {error: '<private>'});
+  assert.match(ctx.creditCellHTML('id'), />查询失败</);
+  assert.doesNotMatch(ctx.creditCellHTML('id'), /0.0000|<private>/);
+  states.set('id', {data: {balance: 0.5, checkedAt: 1}, error: 'HTTP 503'});
+  assert.match(ctx.creditCellHTML('id'), /0.5000 ⚠/);
+  assert.match(ctx.creditCellHTML('id'), /当前显示上次余额/);
+});
+
+test('credit requests limit concurrency, deduplicate, and skip queued rows after paging', async () => {
+  const pending = [], calls = [];
+  const ctx = runtime(['queueVisibleCredits', 'requestAccountCredit', 'drainCreditQueue', 'fetchAccountCredit'], {
+    creditStates: new Map(), creditQueue: [], creditRunning: 0, modalAccountId: null,
+    syncCreditViews() {},
+    api: async (_, path) => { calls.push(path); return new Promise(resolve => pending.push(resolve)); },
+  });
+  ctx.queueVisibleCredits(['a','b','c','d','e'].map(accountId => ({accountId})));
+  ctx.requestAccountCredit('a');
+  assert.equal(calls.length, 3);
+  ctx.queueVisibleCredits([{accountId:'f'}]);
+  for (const resolve of pending.splice(0)) resolve({data:{balance:0.5,checkedAt:1}});
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 4);
+  assert.ok(calls[3].endsWith('accountId=f'));
+  pending.shift()({data:{balance:0,checkedAt:2}});
+  await new Promise(setImmediate);
+  assert.equal(ctx.creditRunning, 0);
+  assert.equal(ctx.creditStates.get('f').data.balance, 0);
+  ctx.requestAccountCredit('f');
+  assert.equal(calls.length, 4, 'fresh balance should use browser cache');
+});
+
+test('account list has an independent Credit column and queries only current page', () => {
+  let queried;
+  const nodes = { accountTableBody: {} };
+  const ctx = runtime(['renderAccountPage'], {
+    _: id => nodes[id], accountList: ['a','b','c'].map(accountId => ({accountId,email:accountId,status:'active'})),
+    accountPage: 2, accountPageSize: 1, accountSelected: new Set(),
+    esc: s => s, attr: s => s, jsStr: s => s, creditCellHTML: () => '0.5000',
+    updateAccountPager() {}, queueVisibleCredits: rows => { queried = rows; },
+  });
+  ctx.renderAccountPage();
+  assert.equal(queried.length, 1);
+  assert.equal(queried[0].accountId, 'b');
+  assert.match(nodes.accountTableBody.innerHTML, /data-credit-id="b">0.5000/);
+  assert.equal((nodes.accountTableBody.innerHTML.match(/<td\b/g) || []).length, 9);
+});
+
+test('token section explains on-demand refresh rather than account expiry', () => {
+  const ctx = runtime(['renderTokenSection'], { esc: s => s, jsStr: s => s, fmtDateTime: () => 'past' });
+  const result = ctx.renderTokenSection({accountId:'test',expiresAt:Date.now()-1000});
+  assert.match(result, /Access Token 刷新时间/);
+  assert.match(result, /下次使用时自动刷新/);
+  assert.match(result, /不代表账号到期/);
+  assert.match(result, /不是每天定时刷新/);
+});

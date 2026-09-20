@@ -337,6 +337,7 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	// 全部模型清单：与推荐分组不同，这份是平铺的完整列表，面板展开折叠块时才请求。
 	mux.HandleFunc("/admin/api/model-catalog", corsHandler(handleAdminModelCatalog))
 	mux.HandleFunc("/admin/api/models/check", corsHandler(handleAdminModelCheck))
+	mux.HandleFunc("/admin/api/accounts/balance", corsHandler(handleAdminAccountBalance))
 	mux.HandleFunc("/admin/api/config", corsHandler(handleAdminConfig))
 	mux.HandleFunc("/admin/api/config/update", corsHandler(handleAdminUpdateConfig))
 	// 上游渠道配置（见 upstream.go）：列表 / 保存 / 探测。

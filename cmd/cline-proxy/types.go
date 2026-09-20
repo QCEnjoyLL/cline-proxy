@@ -6,6 +6,7 @@ type Account struct {
 	// Protected by poolMu; refresh results are shared by concurrent callers.
 	refresh          *accountRefresh
 	tokenSavePending bool
+	credits          *accountCreditState // In-memory balance cache, protected by poolMu.
 
 	AccountID       string    `json:"accountId"`
 	Email           string    `json:"email"`
