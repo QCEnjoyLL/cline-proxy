@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -216,17 +217,23 @@ func handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Message: "deleted"})
 }
 
-// POST /admin/api/upstreams/probe  body: { modelId }
+// POST /admin/api/upstreams/probe  body: { modelId, async? }
+// GET /admin/api/upstreams/probe?jobId=... 查询异步任务。
 //
 // 探测会真的打上游，但代价可控：第一步是一次极小的真实请求（用来回读管道归属），
 // 第二步带假渠道名让网关在**路由层**报错并列出清单——后者不产生 token 消耗。
 func handleAdminUpstreamProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		handleAdminProbeStatus(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
 	}
 	var req struct {
 		ModelID string `json:"modelId"`
+		Async   bool   `json:"async"`
 	}
 	if err := readJSONBody(r, &req); err != nil {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "invalid request: " + err.Error()})
@@ -237,14 +244,25 @@ func handleAdminUpstreamProbe(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "modelId is required"})
 		return
 	}
+	if req.Async {
+		handleAdminProbeStart(w, modelID)
+		return
+	}
 
-	probe, err := probeModelUpstreams(modelID)
+	probe, err := executeUpstreamProbe(r.Context(), modelID)
 	if err != nil {
 		// 502：上游或账号不可用属于我们这条链路的问题，不是请求写错了。
 		writeAPI(w, http.StatusBadGateway, apiResponse{Error: err.Error()})
 		return
 	}
+	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: probe})
+}
 
+func executeUpstreamProbe(ctx context.Context, modelID string) (*probeResult, error) {
+	probe, err := probeModelUpstreamsContext(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
 	// 探测到的渠道清单与管道归属要落盘，否则「排除渠道」换算白名单时无据可依。
 	if probe.Pipeline != "" || len(probe.Available) > 0 {
 		if saveErr := saveProbeResult(modelID, probe); saveErr != nil {
@@ -253,7 +271,7 @@ func handleAdminUpstreamProbe(w http.ResponseWriter, r *http.Request) {
 			probe.Note = strings.TrimSpace(probe.Note + "（探测结果未能保存：" + saveErr.Error() + "）")
 		}
 	}
-	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: probe})
+	return probe, nil
 }
 
 // sanitizeModelIDs 清洗别名列表：去空白、挡掉破坏格式的字符、去重（保序）。

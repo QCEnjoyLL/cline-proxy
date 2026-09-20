@@ -499,6 +499,13 @@ func splitProviderTokens(pattern *regexp.Regexp, text string) []string {
 // 而 callClineAPI 会把非 200 转成 error 并丢掉响应体；探测也不该计入使用量、
 // 不该触发冷却——那都是真实请求才有的副作用。
 func upstreamCall(modelID string, body map[string]any, timeout time.Duration) (int, []byte, error) {
+	return upstreamCallContext(context.Background(), modelID, body, timeout)
+}
+
+func upstreamCallContext(parent context.Context, modelID string, body map[string]any, timeout time.Duration) (int, []byte, error) {
+	if err := parent.Err(); err != nil {
+		return 0, nil, err
+	}
 	account := pickAccount(modelID)
 	if account == nil {
 		return 0, nil, fmt.Errorf("no active accounts available")
@@ -514,7 +521,7 @@ func upstreamCall(modelID string, body map[string]any, timeout time.Duration) (i
 	}
 
 	sessionID, _ := body["session_id"].(string)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, clineAPIBase+"/chat/completions", bytes.NewReader(payload))
@@ -576,15 +583,18 @@ func appendProbeNote(result *probeResult, note string) {
 
 // probeModelUpstreams 探测一个模型的管道归属与可用渠道清单。
 //
-// 共三步：
+// 共两步：
 //  1. 发一次**带上当前钉住配置**的真实请求（有配置时就注入，没有就是自动模式），
 //     既回读管道归属，也顺带回答「我钉的渠道到底生效了没有」。
-//  2. 若管道仍未知，用顶层 provider 形式再试一次拿管道（两种形式同时注入是安全的）。
-//  3. 带假上游名让网关在**路由层**报错并列出渠道清单（不产生 token 消耗）。
+//  2. 带假上游名让网关在**路由层**报错并列出渠道清单。
 //
 // 第 1 步必须真的注入钉住配置：否则「实际命中的渠道」与「用户钉的渠道」无关，
 // providerMatch 就永远只是个偶然巧合，而不是在验证钉住是否生效。
 func probeModelUpstreams(modelID string) (*probeResult, error) {
+	return probeModelUpstreamsContext(context.Background(), modelID)
+}
+
+func probeModelUpstreamsContext(ctx context.Context, modelID string) (*probeResult, error) {
 	upstreamModel := upstreamModelID(modelID)
 	cfg := modelUpstreamSnapshot(modelID)
 	result := &probeResult{ModelID: modelID, UpstreamModel: upstreamModel}
@@ -597,7 +607,7 @@ func probeModelUpstreams(modelID string) (*probeResult, error) {
 	}
 
 	start := time.Now()
-	status, raw, err := upstreamCall(upstreamModel, probeBody, 180*time.Second)
+	status, raw, err := upstreamCallContext(ctx, upstreamModel, probeBody, 180*time.Second)
 	result.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, err
@@ -641,7 +651,7 @@ func probeModelUpstreams(modelID string) (*probeResult, error) {
 		setProviderPrefs(enumBody, map[string]any{"only": []any{probeSentinel}})
 	}
 
-	_, probeRaw, probeErr := upstreamCall(upstreamModel, enumBody, 60*time.Second)
+	_, probeRaw, probeErr := upstreamCallContext(ctx, upstreamModel, enumBody, 60*time.Second)
 	if probeErr != nil {
 		appendProbeNote(result, "渠道枚举请求失败："+probeErr.Error())
 		return result, nil
@@ -663,13 +673,30 @@ func saveProbeResult(modelID string, probe *probeResult) error {
 		p.PerModel = make(map[string]ModelUpstream)
 	}
 	entry, ok := p.PerModel[modelID]
+	previous := entry
 	if !ok {
 		entry = ModelUpstream{}
 	}
-	entry.Pipeline = probe.Pipeline
-	entry.Available = probe.Available
+	// Preserve partial results only while they belong to the same pipeline.
+	if probe.Pipeline != "" {
+		if probe.Pipeline != entry.Pipeline {
+			entry.Available = nil
+		}
+		entry.Pipeline = probe.Pipeline
+	}
+	if len(probe.Available) > 0 {
+		entry.Available = probe.Available
+	}
 	entry.ProbedAt = time.Now().UnixMilli()
 	p.PerModel[modelID] = entry
-	poolMu.Unlock()
-	return savePool()
+	defer poolMu.Unlock()
+	if err := savePoolLocked(); err != nil {
+		if ok {
+			p.PerModel[modelID] = previous
+		} else {
+			delete(p.PerModel, modelID)
+		}
+		return err
+	}
+	return nil
 }

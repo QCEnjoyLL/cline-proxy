@@ -22,6 +22,10 @@ jobs:
           cache: false
       - run: go test -race ./...
       - run: go vet ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/*.test.cjs
 
   build:
     needs: test

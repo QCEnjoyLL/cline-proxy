@@ -1126,14 +1126,32 @@ document.querySelectorAll('#importTabs .tab').forEach(el => {
 });
 
 // ========== API 请求 ==========
-async function api(method, path, body) {
+async function api(method, path, body, timeoutMs = 0) {
   const opts = { method, headers: {} };
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-  const res = await fetch(API + path, opts);
-  if (res.status === 401) { window.location.href = '/admin/login'; throw new Error('未登录'); }
-  const data = await res.json();
-  if (!data.success && data.error) throw new Error(data.error);
-  return data;
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  if (controller) opts.signal = controller.signal;
+  try {
+    const res = await fetch(API + path, opts);
+    if (res.status === 401 || (res.redirected && new URL(res.url, window.location.href).pathname === '/admin/login')) {
+      window.location.href = '/admin/login'; throw new Error('登录已过期，请重新登录');
+    }
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch (_) {
+      const status = 'HTTP ' + res.status;
+      if ([502, 503, 504, 524].includes(res.status)) throw new Error('网关或服务暂时不可用（' + status + '），返回了非 JSON 页面，请重试或检查反向代理日志');
+      if (res.status === 403) throw new Error('请求被拒绝（' + status + '），请检查反向代理或访问防护规则');
+      throw new Error('接口返回了非 JSON 内容（' + status + '），请检查访问地址、登录状态或反向代理配置');
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('接口响应格式不正确（HTTP ' + res.status + '）');
+    if (!res.ok || data.success !== true) throw new Error(typeof data.error === 'string' ? data.error : '请求失败（HTTP ' + res.status + '）');
+    return data;
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('请求超时，请检查网络后重试');
+    throw e;
+  } finally { if (timer !== null) clearTimeout(timer); }
 }
 
 // ========== 仪表盘 ==========
@@ -2354,6 +2372,7 @@ async function loadConfig() {
 let upstreamModels = [];    // 可配置的模型清单
 let upstreamEntries = [];   // 已保存的配置
 let upstreamEditing = null; // 弹层正在编辑的模型 ID
+let upstreamModalGeneration = 0;
 
 async function loadUpstreams() {
   const tbody = _('upstreamTableBody');
@@ -2423,6 +2442,25 @@ function renderUpstreamTable() {
   }).join('');
 }
 
+// Long probes run on the server; each HTTP request stays short through proxies.
+async function runUpstreamProbe(modelId) {
+  const started = await api('POST', '/upstreams/probe', { modelId, async: true }, 15000);
+  const jobId = started.data && started.data.jobId;
+  if (!jobId) throw new Error('服务端未返回探测任务，请确认已升级到最新版本');
+  const deadline = Date.now() + 330000;
+  while (Date.now() < deadline) {
+    const d = await api('GET', '/upstreams/probe?jobId=' + encodeURIComponent(jobId), null, 15000);
+    if (!d.data || !['running', 'done', 'failed'].includes(d.data.status)) throw new Error('探测任务响应格式不正确');
+    if (d.data.status === 'done') {
+      if (!d.data.result || typeof d.data.result !== 'object' || Array.isArray(d.data.result)) throw new Error('探测结果格式不正确');
+      return d.data.result;
+    }
+    if (d.data.status === 'failed') throw new Error(d.data.error || '探测失败');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error('探测等待超时，请稍后重试');
+}
+
 // 探测：把结果直接摊在页面上，包含渠道清单、管道与「实际命中」。
 async function probeUpstream() {
   const modelId = _('upstreamModelSelect').value;
@@ -2430,8 +2468,7 @@ async function probeUpstream() {
   const box = _('probeResult');
   box.innerHTML = '<div class="section-body" style="padding:10px 0"><div class="loading"></div> 正在探测 ' + esc(modelId) + '…（会向网关发一到两次极小的请求）</div>';
   try {
-    const d = await api('POST', '/upstreams/probe', { modelId: modelId });
-    const r = d.data;
+    const r = await runUpstreamProbe(modelId);
     const chips = (r.available || []).map(u =>
       '<button class="btn btn-sm" style="margin:2px" onclick="pinChannelFromProbe(\'' + jsStr(modelId) + '\',\'' + jsStr(u) + '\')" title="把该模型钉到这个渠道">' + esc(u) + '</button>'
     ).join('');
@@ -2476,7 +2513,8 @@ function editUpstreamModel() {
   openUpstreamModal(modelId);
 }
 
-async function openUpstreamModal(modelId) {
+async function openUpstreamModal(modelId, pendingForm = null) {
+  upstreamModalGeneration++;
   upstreamEditing = modelId;
   const modal = _('upstreamModal');
   modal.classList.add('open');
@@ -2488,7 +2526,7 @@ async function openUpstreamModal(modelId) {
   const known = entry.available || [];
   // 已钉的渠道即使不在已知清单里也要显示，否则用户看不到自己配过什么。
   const pinned = entry.upstreams || [];
-  const options = Array.from(new Set([...pinned, ...known])).filter(Boolean).sort();
+  const options = Array.from(new Set([...pinned, ...known, ...(pendingForm ? pendingForm.pins : [])])).filter(Boolean).sort();
   const pinnedHtml = options.length
     ? options.map(u => {
         const checked = pinned.includes(u) ? ' checked' : '';
@@ -2496,7 +2534,7 @@ async function openUpstreamModal(modelId) {
         return '<label class="upstream-option">' +
           '<input type="checkbox" class="up-pin" value="' + attr(u) + '"' + checked + '>' + esc(u) + tag + '</label>';
       }).join('')
-    : '<div class="empty" style="padding:10px 0">还没有渠道清单。先关掉这里点「探测渠道」，再回来勾选。</div>';
+    : '<div class="empty" style="padding:10px 0">还没有渠道清单。点击下方「探测渠道」后即可勾选。</div>';
 
   _('upstreamModalBody').innerHTML =
     '<div class="form-row"><div class="field"><label>钉住模式</label>' +
@@ -2519,14 +2557,15 @@ async function openUpstreamModal(modelId) {
     '</div>' +
     '<div class="form-actions" style="margin-top:12px">' +
       '<button class="btn btn-primary" onclick="saveUpstreamConfig()"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg>保存</button>' +
-      '<button class="btn" onclick="probeFromModal()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>探测渠道</button>' +
+      '<button class="btn" id="upstreamProbeButton" onclick="probeFromModal()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>探测渠道</button>' +
       '<button class="btn" onclick="closeUpstreamModal()">取消</button>' +
-    '</div>';
+    '</div><div id="upstreamProbeNotice" role="status" aria-live="polite" style="margin-top:10px;color:var(--text2);font-size:12px"></div>';
 
   if (entry.pinMode) _('upPinMode').value = entry.pinMode;
 }
 
 function closeUpstreamModal() {
+  upstreamModalGeneration++;
   _('upstreamModal').classList.remove('open');
   upstreamEditing = null;
 }
@@ -2535,16 +2574,22 @@ function closeUpstreamModal() {
 async function probeFromModal() {
   if (!upstreamEditing) return;
   const modelId = upstreamEditing;
-  const keep = readUpstreamForm();
-  _('upstreamModalBody').innerHTML = '<div class="empty"><div class="loading"></div> 正在探测 ' + esc(modelId) + '…</div>';
+  const generation = upstreamModalGeneration;
+  const button = _('upstreamProbeButton');
+  if (button.disabled) return;
+  button.disabled = true;
+  _('upstreamProbeNotice').textContent = '正在探测 ' + modelId + '…配置可继续编辑，请稍候';
   try {
-    await api('POST', '/upstreams/probe', { modelId: modelId });
+    const result = await runUpstreamProbe(modelId);
     await loadUpstreams();
-    await openUpstreamModal(modelId);
+    if (generation !== upstreamModalGeneration || upstreamEditing !== modelId) return;
+    const keep = readUpstreamForm();
+    await openUpstreamModal(modelId, keep);
     applyUpstreamForm(keep);
+    _('upstreamProbeNotice').textContent = result.note || '探测完成，渠道清单已更新';
   } catch (e) {
-    _('upstreamModalBody').innerHTML = '<div class="empty">探测失败：' + esc(e.message) + '</div>';
-  }
+    if (generation === upstreamModalGeneration && upstreamEditing === modelId) _('upstreamProbeNotice').textContent = '探测失败：' + e.message + '。当前配置已保留，可直接重试。';
+  } finally { button.disabled = false; }
 }
 
 function readUpstreamForm() {

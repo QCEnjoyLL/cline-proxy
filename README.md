@@ -258,6 +258,7 @@ x-client-type: cline-cli
 
 一键 **探测渠道** 会向网关发一到两次极小的请求，列出该模型当前可用的全部渠道，
 并显示实际命中的渠道与是否与你的钉住一致。探测结果会缓存到账号池文件里。
+后台会异步执行探测，面板通过短请求查询结果，避免长请求被反向代理中断。探测期间可以继续编辑配置，失败后保留输入并支持重试。
 
 还可以配置 **别名重定向**：把客户端使用的稳定模型 ID 映射到上游真实 ID，
 上游改名或换 ID 时只改这里，客户端无需改动。
@@ -275,7 +276,8 @@ x-client-type: cline-cli
 | `GET` | `/admin/api/upstreams` | 列出可配置的模型与已保存的配置 |
 | `POST` | `/admin/api/upstreams/save` | 保存某个模型的上游配置 |
 | `POST` | `/admin/api/upstreams/delete` | 删除配置（回到自动模式） |
-| `POST` | `/admin/api/upstreams/probe` | 探测管道归属与可用渠道清单 |
+| `POST` | `/admin/api/upstreams/probe` | 探测管道归属与可用渠道清单；传入 `async: true` 返回任务 ID |
+| `GET` | `/admin/api/upstreams/probe?jobId=...` | 查询探测任务状态与结果；任务仅保存在内存，服务重启后需重新探测 |
 
 ### 📄 账号分页与导出
 
@@ -348,13 +350,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.7.3` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
+| `1.7.4` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.3   # 对应版本发布后可固定使用
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.4   # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

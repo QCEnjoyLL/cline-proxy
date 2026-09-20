@@ -460,8 +460,8 @@ func TestAdminUpstreamProbeRejectsBadInput(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	handleAdminUpstreamProbe(rec, httptest.NewRequest(http.MethodGet, "/admin/api/upstreams/probe", nil))
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET status = %d, want 405", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GET without jobId status = %d, want 400", rec.Code)
 	}
 }
 
