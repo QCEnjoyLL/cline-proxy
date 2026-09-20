@@ -11,7 +11,7 @@ import (
 )
 
 type accountCreditBalance struct {
-	Balance   float64 `json:"balance"`
+	Balance   float64 `json:"balance"` // User-facing Credits, not upstream microcredits.
 	CheckedAt int64   `json:"checkedAt"`
 }
 
@@ -60,7 +60,9 @@ func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalan
 	if credits.Balance == nil {
 		return nil, fmt.Errorf("官方接口未返回 Credit 余额")
 	}
-	return &accountCreditBalance{Balance: *credits.Balance, CheckedAt: time.Now().UnixMilli()}, nil
+	// Match Cline's formatCreditsBalance: 1 Credit = 10,000 microcredits.
+	// Convert before caching so both the account list and details use Credits.
+	return &accountCreditBalance{Balance: *credits.Balance / 10000, CheckedAt: time.Now().UnixMilli()}, nil
 }
 
 func accountBalanceGET(ctx context.Context, acc *Account, token *string, path string, out any) error {

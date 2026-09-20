@@ -56,6 +56,46 @@ func TestAccountBalanceUsesOfficialUserIDAndCachesZero(t *testing.T) {
 	}
 }
 
+func TestAccountBalanceEndpointConvertsMicrocredits(t *testing.T) {
+	// Contract examples from Cline's formatCreditsBalance, plus the user's
+	// signup balance and the smallest displayed unit. No credentials required.
+	for _, tc := range []struct {
+		raw  string
+		want float64
+	}{
+		{"5000", 0.5}, {"50000", 5}, {"12345", 1.2345}, {"1", 0.0001}, {"0", 0},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			p := seedReliabilityPool(t)
+			acc := p.Accounts[0]
+			acc.AccessToken, acc.ExpiresAt = "workos:cached", time.Now().Add(time.Hour).UnixMilli()
+			mockReliabilityHTTP(t, func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/me") {
+					return reliabilityResponse(200, `{"data":{"id":"user"}}`), nil
+				}
+				return reliabilityResponse(200, `{"data":{"balance":`+tc.raw+`}}`), nil
+			})
+			w := httptest.NewRecorder()
+			handleAdminAccountBalance(w, httptest.NewRequest("GET", "/admin/api/accounts/balance?accountId="+acc.AccountID, nil))
+			var response struct {
+				Data accountCreditBalance `json:"data"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != 200 || response.Data.Balance != tc.want {
+				t.Fatalf("raw=%s response=%s want Credits=%v", tc.raw, w.Body.String(), tc.want)
+			}
+			poolMu.Lock()
+			cached := acc.credits.value.Balance
+			poolMu.Unlock()
+			if cached != tc.want {
+				t.Fatalf("cache retained raw microcredits: %v", cached)
+			}
+		})
+	}
+}
+
 func TestAccountBalanceDoesNotTreatFailuresAsZero(t *testing.T) {
 	for _, body := range []string{`<html>error</html>`, `{"success":false,"data":{"balance":0}}`, `{"data":{}}`, `{"data":{"balance":"0.5"}}`, `{"data":null}`} {
 		t.Run(body, func(t *testing.T) {
@@ -95,7 +135,7 @@ func TestAccountBalanceRefreshesRejectedTokenOnce(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/me") {
 			return reliabilityResponse(200, `{"data":{"id":"user"}}`), nil
 		}
-		return reliabilityResponse(200, `{"data":{"balance":0.5}}`), nil
+		return reliabilityResponse(200, `{"data":{"balance":5000}}`), nil
 	})
 	got, err := cachedAccountBalance(context.Background(), acc, false)
 	if err != nil || got.Balance != 0.5 || refreshes != 1 || acc.RefreshToken != "new-refresh" {
@@ -119,9 +159,9 @@ func TestAccountBalanceConcurrentQueriesShareRequestAndIsolateAccounts(t *testin
 			return reliabilityResponse(200, `{"data":{"id":"`+id+`"}}`), nil
 		}
 		if strings.Contains(r.URL.Path, "/second/") {
-			return reliabilityResponse(200, `{"data":{"balance":2}}`), nil
+			return reliabilityResponse(200, `{"data":{"balance":20000}}`), nil
 		}
-		return reliabilityResponse(200, `{"data":{"balance":1}}`), nil
+		return reliabilityResponse(200, `{"data":{"balance":10000}}`), nil
 	})
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
