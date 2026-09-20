@@ -153,6 +153,8 @@ func handleAdminUpstreamSave(w http.ResponseWriter, r *http.Request) {
 	if prev, ok := p.PerModel[modelID]; ok {
 		entry.Pipeline = prev.Pipeline
 		entry.Available = prev.Available
+		entry.Observed = prev.Observed
+		entry.LastProvider = prev.LastProvider
 		entry.ProbedAt = prev.ProbedAt
 	}
 	previous, existed := p.PerModel[modelID]
@@ -221,7 +223,7 @@ func handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) {
 // GET /admin/api/upstreams/probe?jobId=... 查询异步任务。
 //
 // 探测会真的打上游，但代价可控：第一步是一次极小的真实请求（用来回读管道归属），
-// 第二步带假渠道名让网关在**路由层**报错并列出清单——后者不产生 token 消耗。
+// 第二步带假渠道名尝试获取渠道清单；网关若忽略筛选，仍可能生成回答。
 func handleAdminUpstreamProbe(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		handleAdminProbeStatus(w, r)

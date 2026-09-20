@@ -2484,6 +2484,11 @@ async function probeUpstream() {
       html += '<div style="margin-top:10px"><div style="color:var(--text2);font-size:12px;margin-bottom:6px">' +
         '可用渠道（' + r.available.length + '，点击即钉住）：</div>' + chips + '</div>';
     }
+    const observed = (r.observed || []).filter(u => !(r.available || []).includes(u));
+    if (observed.length) {
+      html += '<div style="margin-top:10px;color:var(--text2);font-size:12px">响应元数据中的命中/候选渠道（可能不完整，未验证可严格钉住）：' +
+        observed.map(u => '<span class="chip">' + esc(u) + '</span>').join('') + '</div>';
+    }
     if ((r.fallbacks || []).length) {
       html += '<div style="margin-top:8px;color:var(--text2);font-size:12px">网关排的候选顺序：' +
         (r.fallbacks || []).map(u => '<span class="chip">' + esc(u) + '</span>').join('') + '</div>';
@@ -2524,13 +2529,17 @@ async function openUpstreamModal(modelId, pendingForm = null) {
 
   const entry = upstreamEntries.find(e => e.modelId === modelId) || {};
   const known = entry.available || [];
+  const observed = entry.observed || [];
   // 已钉的渠道即使不在已知清单里也要显示，否则用户看不到自己配过什么。
   const pinned = entry.upstreams || [];
-  const options = Array.from(new Set([...pinned, ...known, ...(pendingForm ? pendingForm.pins : [])])).filter(Boolean).sort();
+  const options = Array.from(new Set([...pinned, ...known, ...observed, ...(pendingForm ? pendingForm.pins : [])])).filter(Boolean).sort();
   const pinnedHtml = options.length
     ? options.map(u => {
         const checked = pinned.includes(u) ? ' checked' : '';
-        const tag = known.includes(u) ? '' : ' <span style="color:var(--text2);font-size:11px">（未探测到）</span>';
+        const evidence = observed.includes(u)
+          ? (u === entry.lastProvider ? '最近命中，未验证可严格钉住' : '元数据候选，未验证可严格钉住')
+          : '未探测到';
+        const tag = known.includes(u) ? '' : ' <span style="color:var(--text2);font-size:11px">（' + evidence + '）</span>';
         return '<label class="upstream-option">' +
           '<input type="checkbox" class="up-pin" value="' + attr(u) + '"' + checked + '>' + esc(u) + tag + '</label>';
       }).join('')
@@ -2552,8 +2561,8 @@ async function openUpstreamModal(modelId, pendingForm = null) {
       '<input type="text" id="upAliases" maxlength="400" placeholder="例如 [cline]-deepseek-v4-flash, my-fast-model" value="' + attr((entry.aliases || []).join(', ')) + '">' +
     '</div></div>' +
     '<div class="limit-note">' +
-      '自动模式让网关自己挑渠道并在故障时转移，实测它会在 baseten(503) → fireworks(503) → alibaba(200) 之间自动跳转，' +
-      '比在代理层重试更有效。只有某个渠道持续限流、或你必须固定走某个渠道时才手动钉住。' +
+      '自动模式由网关选择上游。渠道能否切换取决于该模型当前路由；响应元数据中的候选渠道可能不完整，' +
+      '也不代表严格钉住已生效。只有需要限制渠道时才手动钉住。' +
     '</div>' +
     '<div class="form-actions" style="margin-top:12px">' +
       '<button class="btn btn-primary" onclick="saveUpstreamConfig()"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg>保存</button>' +

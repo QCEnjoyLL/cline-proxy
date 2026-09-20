@@ -144,3 +144,19 @@ test('embedded admin script parses', () => {
   assert.ok(scripts.length);
   for (const script of scripts) new vm.Script(script[1]);
 });
+
+test('modal distinguishes metadata candidates from enumerated channels', async () => {
+  const nodes = new Proxy({}, { get(target, id) {
+    return target[id] ||= { innerHTML: '', value: '', classList: { add() {} } };
+  } });
+  const ctx = runtime(['openUpstreamModal'], {
+    _: id => nodes[id], esc: s => s, attr: s => s,
+    upstreamModalGeneration: 0, upstreamEditing: null,
+    upstreamEntries: [{ modelId: 'model', upstreams: ['deepseek'], observed: ['deepseek', 'alibaba'], lastProvider: 'deepseek' }],
+  });
+  await ctx.openUpstreamModal('model');
+  assert.match(nodes.upstreamModalBody.innerHTML, /value="deepseek" checked/);
+  assert.match(nodes.upstreamModalBody.innerHTML, /最近命中，未验证可严格钉住/);
+  assert.match(nodes.upstreamModalBody.innerHTML, /元数据候选，未验证可严格钉住/);
+  assert.doesNotMatch(nodes.upstreamModalBody.innerHTML, /未探测到/);
+});

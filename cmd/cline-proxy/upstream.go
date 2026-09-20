@@ -33,7 +33,7 @@ const (
 )
 
 // probeSentinel 是探测用的假上游名。故意带一个不存在的渠道，让网关在**路由层**
-// 就报错并列出可用渠道清单，从而不消耗任何 token。
+// 就报错并列出可用渠道清单；若网关忽略筛选，仍可能生成回答并消耗 token。
 const probeSentinel = "__probe__"
 
 // probeMaxTokens 是探测请求的 max_tokens。
@@ -78,8 +78,11 @@ type ModelUpstream struct {
 	// Pipeline / Available / ProbedAt 是探测结果的缓存，由探测接口写入。
 	Pipeline  string   `json:"pipeline,omitempty"`
 	Available []string `json:"available,omitempty"`
-	ProbedAt  int64    `json:"probedAt,omitempty"`
-	UpdatedAt int64    `json:"updatedAt,omitempty"`
+	// Observed 来自 planner 响应元数据，可能不完整，不能用于排除项的白名单换算。
+	Observed     []string `json:"observed,omitempty"`
+	LastProvider string   `json:"lastProvider,omitempty"`
+	ProbedAt     int64    `json:"probedAt,omitempty"`
+	UpdatedAt    int64    `json:"updatedAt,omitempty"`
 }
 
 // isPinPreferred 判断是否使用 order 表达优先级。
@@ -561,6 +564,7 @@ type probeResult struct {
 	Provider      string   `json:"provider"`
 	ProviderMatch bool     `json:"providerMatch"`
 	Available     []string `json:"available"`
+	Observed      []string `json:"observed,omitempty"`
 	Fallbacks     []string `json:"fallbacks"`
 	LatencyMS     int64    `json:"latencyMs"`
 	Note          string   `json:"note,omitempty"`
@@ -581,6 +585,17 @@ func appendProbeNote(result *probeResult, note string) {
 	result.Note += "；" + note
 }
 
+// Metadata candidates are useful when the gateway does not expose an exhaustive
+// list. Keep them separate: observing a provider does not prove it can be pinned.
+func observedProviders(routing upstreamRouting) []string {
+	if routing.Pipeline != pipelinePlanner {
+		return nil // Direct display names are not necessarily valid provider slugs.
+	}
+	providers := []string{routing.Provider}
+	providers = append(providers, routing.Fallbacks...)
+	return sanitizeUpstreams(providers)
+}
+
 // probeModelUpstreams 探测一个模型的管道归属与可用渠道清单。
 //
 // 共两步：
@@ -589,7 +604,7 @@ func appendProbeNote(result *probeResult, note string) {
 //  2. 带假上游名让网关在**路由层**报错并列出渠道清单。
 //
 // 第 1 步必须真的注入钉住配置：否则「实际命中的渠道」与「用户钉的渠道」无关，
-// providerMatch 就永远只是个偶然巧合，而不是在验证钉住是否生效。
+// providerMatch 只表示实际命中与配置一致，不能单独证明网关执行了筛选。
 func probeModelUpstreams(modelID string) (*probeResult, error) {
 	return probeModelUpstreamsContext(context.Background(), modelID)
 }
@@ -622,6 +637,7 @@ func probeModelUpstreamsContext(ctx context.Context, modelID string) (*probeResu
 		appendProbeNote(result, fmt.Sprintf("基线请求返回 HTTP %d：%s", status, truncate(string(raw), 300)))
 		return result, nil
 	}
+	result.Observed = observedProviders(routing)
 	if routing.Pipeline == "" {
 		appendProbeNote(result, "响应里既没有 provider_metadata.gateway.routing，也没有顶层 provider，无法判定管道")
 		return result, nil
@@ -642,8 +658,8 @@ func probeModelUpstreamsContext(ctx context.Context, modelID string) (*probeResu
 		}
 	}
 
-	// 渠道枚举：故意带一个不存在的渠道名，让网关在路由层拒绝并回吐可用清单。
-	// 这一步不产生 token 消耗，也不会被计入使用量。
+	// 渠道枚举：故意带一个不存在的渠道名，尝试让网关拒绝并回吐清单。
+	// 某些模型会忽略筛选并正常生成回答，不能假定这一步一定不消耗 token。
 	enumBody := probeRequestBody(upstreamModel, 16)
 	if routing.Pipeline == pipelinePlanner {
 		setGatewayPrefs(enumBody, map[string]any{"only": []any{probeSentinel}})
@@ -651,16 +667,22 @@ func probeModelUpstreamsContext(ctx context.Context, modelID string) (*probeResu
 		setProviderPrefs(enumBody, map[string]any{"only": []any{probeSentinel}})
 	}
 
-	_, probeRaw, probeErr := upstreamCallContext(ctx, upstreamModel, enumBody, 60*time.Second)
+	probeStatus, probeRaw, probeErr := upstreamCallContext(ctx, upstreamModel, enumBody, 60*time.Second)
 	if probeErr != nil {
-		appendProbeNote(result, "渠道枚举请求失败："+probeErr.Error())
+		appendProbeNote(result, "模型已响应，但渠道枚举请求失败："+probeErr.Error()+"；响应元数据中的候选渠道不代表完整清单或可严格钉住")
+		return result, nil
+	}
+	var probeObject map[string]any
+	_ = json.Unmarshal(probeRaw, &probeObject)
+	if probeStatus == http.StatusOK && firstChoiceMap(unwrapUpstream(probeObject)) != nil {
+		appendProbeNote(result, "模型已正常响应，但网关未按 only 筛选拒绝不存在的渠道，无法枚举完整清单；实际命中："+routing.Provider+"。响应元数据中的候选渠道仅供参考，不能据此确认严格钉住生效")
 		return result, nil
 	}
 	result.Available = parseAvailableProviders(probeRaw, routing.Pipeline)
 	if len(result.Available) == 0 {
 		// 用追加而非覆盖：上面可能已经有「钉住未生效」这类更要紧的结论，
 		// 覆盖掉会让用户看不到它。
-		appendProbeNote(result, "未能从网关错误里解析出渠道清单："+truncate(string(probeRaw), 300))
+		appendProbeNote(result, fmt.Sprintf("模型已响应，但未能从渠道枚举响应（HTTP %d）解析出完整清单；响应元数据中的候选渠道仅供参考：%s", probeStatus, truncate(string(probeRaw), 300)))
 	}
 	return result, nil
 }
@@ -683,6 +705,8 @@ func saveProbeResult(modelID string, probe *probeResult) error {
 			entry.Available = nil
 		}
 		entry.Pipeline = probe.Pipeline
+		entry.Observed = probe.Observed
+		entry.LastProvider = probe.Provider
 	}
 	if len(probe.Available) > 0 {
 		entry.Available = probe.Available
