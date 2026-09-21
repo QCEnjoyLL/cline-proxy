@@ -57,13 +57,13 @@ func TestAccountBalanceUsesOfficialUserIDAndCachesZero(t *testing.T) {
 }
 
 func TestAccountBalanceEndpointConvertsMicrocredits(t *testing.T) {
-	// Contract examples from Cline's formatCreditsBalance, plus the user's
-	// signup balance and the smallest displayed unit. No credentials required.
+	// Deployed app.cline.bot dashboard units, including the live account raw
+	// balance and the reported screenshot. No credentials required for regression.
 	for _, tc := range []struct {
 		raw  string
 		want float64
 	}{
-		{"5000", 0.5}, {"50000", 5}, {"12345", 1.2345}, {"1", 0.0001}, {"0", 0},
+		{"500000", 0.5}, {"499962", 0.499962}, {"499186", 0.499186}, {"1234500", 1.2345}, {"1", 0.000001}, {"0", 0},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			p := seedReliabilityPool(t)
@@ -135,7 +135,7 @@ func TestAccountBalanceRefreshesRejectedTokenOnce(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/me") {
 			return reliabilityResponse(200, `{"data":{"id":"user"}}`), nil
 		}
-		return reliabilityResponse(200, `{"data":{"balance":5000}}`), nil
+		return reliabilityResponse(200, `{"data":{"balance":500000}}`), nil
 	})
 	got, err := cachedAccountBalance(context.Background(), acc, false)
 	if err != nil || got.Balance != 0.5 || refreshes != 1 || acc.RefreshToken != "new-refresh" {
@@ -159,9 +159,9 @@ func TestAccountBalanceConcurrentQueriesShareRequestAndIsolateAccounts(t *testin
 			return reliabilityResponse(200, `{"data":{"id":"`+id+`"}}`), nil
 		}
 		if strings.Contains(r.URL.Path, "/second/") {
-			return reliabilityResponse(200, `{"data":{"balance":20000}}`), nil
+			return reliabilityResponse(200, `{"data":{"balance":2000000}}`), nil
 		}
-		return reliabilityResponse(200, `{"data":{"balance":10000}}`), nil
+		return reliabilityResponse(200, `{"data":{"balance":1000000}}`), nil
 	})
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {

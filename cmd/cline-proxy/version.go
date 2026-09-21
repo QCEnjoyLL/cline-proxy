@@ -21,7 +21,7 @@ import "strings"
 // .github/workflows/docker-build.yml），打 tag 发布时会自动写入 tag 名：
 //
 //	go build -ldflags "-X main.Version=1.2.3" ./cmd/cline-proxy
-var Version = "1.7.8"
+var Version = "1.7.9"
 
 // versionLabel 返回展示用的版本号，统一带一个 v 前缀
 // （避免传入 "v1.2.3" 时显示成 "vv1.2.3"）。

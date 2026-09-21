@@ -164,7 +164,7 @@ docker compose logs --tail=100
 
 ### 👤 账号管理
 
-账号列表在状态后显示独立的 **Credit** 列，账号详情也可查看个人 Credit 余额。余额通过 Cline 官方 `/users/me` 和 `/users/{id}/balance` 接口查询，将接口的 microcredits 除以 10,000 换算为 Credit（例如 `5000 → 0.5000`），显示四位小数，点击金额可刷新；仅加载当前页，最多并发查询 3 个账号，成功结果缓存 1 分钟。失败不会显示成零，已有余额会保留并标记刷新失败。Credit 与模型每日免费额度、订阅用量是不同概念。
+账号列表在状态后显示独立的 **Credit** 列，账号详情也可查看个人 Credit 余额。余额通过 Cline 官方 `/users/me` 和 `/users/{id}/balance` 接口查询，按官网网页的规则将 microcredits 除以 1,000,000 换算为 Credit（例如 `499962 → 0.499962`，四位小数显示 `0.5000`），点击金额可刷新；仅加载当前页，最多并发查询 3 个账号，成功结果缓存 1 分钟。失败不会显示成零，已有余额会保留并标记刷新失败。Credit 与模型每日免费额度、订阅用量是不同概念。
 
 凭据区的 **Access Token 刷新时间** 是项目预留约 1 分钟余量后的刷新时间，不是账号到期时间。项目在使用账号时按需用 Refresh Token 换新 Access Token，没有每日定时刷新任务；Refresh Token 失效后才需要重新登录。
 
@@ -358,13 +358,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.7.8` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
+| `1.7.9` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.8   # 对应版本发布后可固定使用
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.9   # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

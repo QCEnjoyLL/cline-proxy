@@ -229,6 +229,10 @@ test('credit rendering distinguishes zero, unknown, and stale balance after fail
   assert.match(ctx.creditCellHTML('id'), />—</);
   states.set('id', {data: {balance: 0, checkedAt: 1}});
   assert.match(ctx.creditCellHTML('id'), />0.0000</);
+  states.set('id', {data: {balance: 0.499962, checkedAt: 1}});
+  assert.match(ctx.creditCellHTML('id'), />0.5000</);
+  states.set('id', {data: {balance: 0.499186, checkedAt: 1}});
+  assert.match(ctx.creditCellHTML('id'), />0.4992</);
   states.set('id', {error: '<private>'});
   assert.match(ctx.creditCellHTML('id'), />查询失败</);
   assert.doesNotMatch(ctx.creditCellHTML('id'), /0.0000|<private>/);

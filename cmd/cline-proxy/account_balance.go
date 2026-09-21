@@ -25,6 +25,12 @@ type accountCreditState struct {
 
 var accountBalanceSlots = make(chan struct{}, 3)
 
+// app.cline.bot/dashboard and /credits divide the API balance by 1e6.
+// Verified against the deployed dashboard on 2026-09-21 and a live account:
+// raw 499186 => 0.499186 Credits (displayed as 0.4992). The VS Code extension's
+// formatCreditsBalance uses a different divisor and must not define this unit.
+const microcreditsPerCredit = 1_000_000
+
 // The local acc_... ID is not Cline's user ID. Resolve /users/me first, as
 // the official ClineAccountService does, then query the personal credit balance.
 func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalance, error) {
@@ -60,9 +66,8 @@ func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalan
 	if credits.Balance == nil {
 		return nil, fmt.Errorf("官方接口未返回 Credit 余额")
 	}
-	// Match Cline's formatCreditsBalance: 1 Credit = 10,000 microcredits.
 	// Convert before caching so both the account list and details use Credits.
-	return &accountCreditBalance{Balance: *credits.Balance / 10000, CheckedAt: time.Now().UnixMilli()}, nil
+	return &accountCreditBalance{Balance: *credits.Balance / microcreditsPerCredit, CheckedAt: time.Now().UnixMilli()}, nil
 }
 
 func accountBalanceGET(ctx context.Context, acc *Account, token *string, path string, out any) error {
