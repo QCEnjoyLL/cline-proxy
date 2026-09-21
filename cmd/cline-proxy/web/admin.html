@@ -321,7 +321,7 @@ input:focus,textarea:focus,select:focus{
   outline:none;border-color:var(--accent);box-shadow:0 0 0 3.5px var(--accent-soft);
 }
 input:disabled,select:disabled{opacity:.6;cursor:not-allowed}
-#acctPageSize{width:auto;height:27px;padding:3px 6px;font-size:12px;border-radius:6px}
+#acctPageSize,#upstreamPageSize{width:auto;height:27px;padding:3px 6px;font-size:12px;border-radius:6px}
 .upstream-options{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:10px}
 .upstream-option{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;cursor:pointer}
 .upstream-option input{width:auto;margin:0;padding:0;flex:none}
@@ -984,29 +984,32 @@ html.theme-anim,html.theme-anim *{
 
 <div class="section">
   <div class="section-body">
-    <p style="color:var(--text2);margin-bottom:12px">
+    <p style="color:var(--text2);margin:0">
       默认是 <b>自动</b>：不指定渠道，由 Cline 网关自己挑选、并在渠道故障时自动转移到下一个。
-      这是最稳也最省额度的用法；只有在某个渠道持续限流、或你必须固定走某个渠道时才手动钉住。
+      已添加的模型会直接显示在下方；需要指定上游时，点击该行「配置」，探测渠道后勾选并保存。
     </p>
-    <div class="form-row">
-      <div class="field">
-        <label>要配置的模型</label>
-        <select id="upstreamModelSelect"></select>
-      </div>
-      <button class="btn btn-sm btn-primary" onclick="probeUpstream()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>探测渠道</button>
-      <button class="btn btn-sm" onclick="editUpstreamModel()"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg>配置</button>
-    </div>
-    <div id="probeResult"></div>
   </div>
 </div>
 
 <div class="section">
-  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-list"/></svg>已保存的配置<span id="upstreamCount" style="margin-left:8px;color:var(--text2);font-weight:400;font-size:11.5px"></span></div>
-  <div class="section-body" style="padding:0">
+  <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-list"/></svg>模型上游配置<span id="upstreamCount" style="margin-left:8px;color:var(--text2);font-weight:400;font-size:11.5px"></span></div>
+  <div class="section-body" style="padding:0;overflow-x:auto">
     <table>
       <thead><tr><th>模型</th><th>模式</th><th>上游渠道</th><th>别名重定向</th><th>管道</th><th style="width:130px">操作</th></tr></thead>
       <tbody id="upstreamTableBody"><tr><td colspan="6" class="empty">加载中...</td></tr></tbody>
     </table>
+  </div>
+  <div class="section-body" style="display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap">
+    <label style="color:var(--text2);font-size:12px" for="upstreamPageSize">每页</label>
+    <select id="upstreamPageSize" onchange="setUpstreamPageSize(this.value)">
+      <option value="10">10</option><option value="20">20</option>
+      <option value="50">50</option><option value="100">100</option>
+    </select>
+    <button class="btn btn-sm" id="upstreamFirst" onclick="gotoUpstreamPage(1)" title="首页" aria-label="首页"><svg class="ic" aria-hidden="true"><use href="#i-chevrons-left"/></svg></button>
+    <button class="btn btn-sm" id="upstreamPrev" onclick="gotoUpstreamPage(upstreamPage - 1)" title="上一页" aria-label="上一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+    <span class="mono" id="upstreamPageInfo" aria-live="polite" style="font-size:12px;color:var(--text2)">-</span>
+    <button class="btn btn-sm" id="upstreamNext" onclick="gotoUpstreamPage(upstreamPage + 1)" title="下一页" aria-label="下一页"><svg class="ic" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
+    <button class="btn btn-sm" id="upstreamLast" onclick="gotoUpstreamPage(upstreamPageTotal)" title="末页" aria-label="末页"><svg class="ic" aria-hidden="true"><use href="#i-chevrons-right"/></svg></button>
   </div>
 </div>
 </div>
@@ -2489,6 +2492,9 @@ let upstreamModels = [];    // 可配置的模型清单
 let upstreamEntries = [];   // 已保存的配置
 let upstreamEditing = null; // 弹层正在编辑的模型 ID
 let upstreamModalGeneration = 0;
+let upstreamPage = 1;
+let upstreamPageSize = 10;
+let upstreamPageTotal = 1;
 
 async function loadUpstreams() {
   const tbody = _('upstreamTableBody');
@@ -2497,22 +2503,38 @@ async function loadUpstreams() {
     const d = await api('GET', '/upstreams');
     upstreamModels = d.data.models || [];
     upstreamEntries = d.data.upstreams || [];
-    renderUpstreamModelSelect();
     renderUpstreamTable();
   } catch (e) {
     if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">加载失败：' + esc(e.message) + '</td></tr>';
   }
 }
 
-function renderUpstreamModelSelect() {
-  const sel = _('upstreamModelSelect');
-  if (!sel) return;
-  const prev = sel.value;
-  const costLabel = { free: '免费', pass: 'Pass', custom: '自定义' };
-  sel.innerHTML = '<option value="">— 选择模型 —</option>' + upstreamModels.map(m =>
-    '<option value="' + attr(m.id) + '">' + esc(m.id) + '（' + esc(costLabel[m.cost] || m.cost || '未知') + '）</option>'
-  ).join('');
-  if (prev) sel.value = prev;
+function upstreamRows() {
+  const entries = new Map(upstreamEntries.map(e => [e.modelId, e]));
+  const added = new Set(upstreamModels.map(m => m.id));
+  const aliases = new Map();
+  // 与服务端一致：直接配置优先，重名别名按所属模型 ID 排序取首项。
+  [...upstreamEntries].sort((a, b) => a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0).forEach(e => {
+    (e.aliases || []).forEach(id => { if (!aliases.has(id)) aliases.set(id, e); });
+  });
+  const rows = upstreamModels.map(m => {
+    if (entries.has(m.id)) return entries.get(m.id);
+    const shared = aliases.get(m.id);
+    return shared ? { ...shared, modelId: m.id, inheritedFrom: shared.modelId } : { modelId: m.id };
+  });
+  // 保留模型库之外的历史配置，便于管理已有重定向与别名。
+  return rows.concat(upstreamEntries.filter(e => !added.has(e.modelId)));
+}
+
+function gotoUpstreamPage(page) {
+  upstreamPage = Math.max(1, Math.min(upstreamPageTotal, Number(page) || 1));
+  renderUpstreamTable();
+}
+
+function setUpstreamPageSize(size) {
+  upstreamPageSize = [10, 20, 50, 100].includes(Number(size)) ? Number(size) : 10;
+  upstreamPage = 1;
+  renderUpstreamTable();
 }
 
 function upstreamModeLabel(e) {
@@ -2529,31 +2551,42 @@ function upstreamModeLabel(e) {
 function renderUpstreamTable() {
   const tbody = _('upstreamTableBody');
   if (!tbody) return;
+  const rows = upstreamRows();
+  upstreamPageTotal = Math.max(1, Math.ceil(rows.length / upstreamPageSize));
+  upstreamPage = Math.max(1, Math.min(upstreamPage, upstreamPageTotal));
+  _('upstreamPageSize').value = String(upstreamPageSize);
+  _('upstreamPageInfo').textContent = upstreamPage + ' / ' + upstreamPageTotal;
+  _('upstreamFirst').disabled = _('upstreamPrev').disabled = upstreamPage <= 1;
+  _('upstreamLast').disabled = _('upstreamNext').disabled = upstreamPage >= upstreamPageTotal;
   const cnt = _('upstreamCount');
-  if (cnt) cnt.textContent = upstreamEntries.length ? '共 ' + upstreamEntries.length + ' 条' : '';
-  if (upstreamEntries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">还没有配置——所有模型都在自动模式（推荐）</td></tr>';
+  if (cnt) cnt.textContent = '共 ' + rows.length + ' 个模型';
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">还没有添加模型，请先到「模型库」添加。</td></tr>';
     return;
   }
-  tbody.innerHTML = upstreamEntries.map(e => {
+  const added = new Set(upstreamModels.map(m => m.id));
+  const saved = new Set(upstreamEntries.map(e => e.modelId));
+  const start = (upstreamPage - 1) * upstreamPageSize;
+  tbody.innerHTML = rows.slice(start, start + upstreamPageSize).map(e => {
     const ups = (e.upstreams || []).length
       ? (e.upstreams || []).map(u => '<span class="chip">' + esc(u) + '</span>').join('')
       : '<span style="color:var(--text2);font-size:12px">由网关自动选择</span>';
     const alias = [];
+    if (e.inheritedFrom) alias.push('共用配置：<span class="mono">' + esc(e.inheritedFrom) + '</span>');
     if (e.redirect) alias.push('→ <span class="mono" style="font-size:11px">' + esc(e.redirect) + '</span>');
     if ((e.aliases || []).length) alias.push((e.aliases || []).map(a => '<span class="chip">' + esc(a) + '</span>').join(''));
     const pipe = e.pipeline
       ? '<span class="mono" style="font-size:11px">' + esc(e.pipeline) + '</span>'
       : '<span style="color:var(--text2);font-size:12px">未探测</span>';
     return '<tr>' +
-      '<td class="mono" style="font-size:11px">' + esc(e.modelId) + '</td>' +
+      '<td class="mono" style="font-size:11px">' + esc(e.modelId) + (added.has(e.modelId) ? '' : '<div style="color:var(--text2)">历史配置（未添加到模型库）</div>') + '</td>' +
       '<td>' + upstreamModeLabel(e) + '</td>' +
       '<td>' + ups + '</td>' +
       '<td>' + (alias.length ? alias.join(' ') : '<span style="color:var(--text2);font-size:12px">-</span>') + '</td>' +
       '<td>' + pipe + '</td>' +
       '<td style="white-space:nowrap">' +
-        '<button class="btn btn-sm" onclick="openUpstreamModal(\'' + jsStr(e.modelId) + '\')" title="编辑"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg></button> ' +
-        '<button class="btn btn-sm btn-danger" onclick="deleteUpstream(\'' + jsStr(e.modelId) + '\')" title="删除配置（回到自动模式）"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>' +
+        '<button class="btn btn-sm" onclick="openUpstreamModal(\'' + jsStr(e.inheritedFrom || e.modelId) + '\')" title="探测并配置上游"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg>配置</button> ' +
+        (saved.has(e.modelId) ? '<button class="btn btn-sm btn-danger" onclick="deleteUpstream(\'' + jsStr(e.modelId) + '\')" title="清除配置（包括别名与重定向）" aria-label="清除配置"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>' : '') +
       '</td></tr>';
   }).join('');
 }
@@ -2575,63 +2608,6 @@ async function runUpstreamProbe(modelId, path = '/upstreams/probe') {
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   throw new Error('探测等待超时，请稍后重试');
-}
-
-// 探测：把结果直接摊在页面上，包含渠道清单、管道与「实际命中」。
-async function probeUpstream() {
-  const modelId = _('upstreamModelSelect').value;
-  if (!modelId) { toast('请先选择模型', 'error'); return; }
-  const box = _('probeResult');
-  box.innerHTML = '<div class="section-body" style="padding:10px 0"><div class="loading"></div> 正在探测 ' + esc(modelId) + '…（会向网关发一到两次极小的请求）</div>';
-  try {
-    const r = await runUpstreamProbe(modelId);
-    const chips = (r.available || []).map(u =>
-      '<button class="btn btn-sm" style="margin:2px" onclick="pinChannelFromProbe(\'' + jsStr(modelId) + '\',\'' + jsStr(u) + '\')" title="把该模型钉到这个渠道">' + esc(u) + '</button>'
-    ).join('');
-    let html = '<div class="section-body" style="padding:10px 0">' +
-      '<div class="meta-row">' +
-        '<span>管道 <b>' + esc(r.pipeline || '未知') + '</b></span>' +
-        '<span>实际命中 <b>' + esc(r.provider || '-') + '</b></span>' +
-        '<span>耗时 <b>' + (r.latencyMs || 0) + ' ms</b></span>' +
-        (r.upstreamModel && r.upstreamModel !== r.modelId ? '<span>转发为 <b class="mono">' + esc(r.upstreamModel) + '</b></span>' : '') +
-      '</div>';
-    if (r.note) html += '<div class="limit-note">' + esc(r.note) + '</div>';
-    if ((r.available || []).length) {
-      html += '<div style="margin-top:10px"><div style="color:var(--text2);font-size:12px;margin-bottom:6px">' +
-        '可用渠道（' + r.available.length + '，点击即钉住）：</div>' + chips + '</div>';
-    }
-    const observed = (r.observed || []).filter(u => !(r.available || []).includes(u));
-    if (observed.length) {
-      html += '<div style="margin-top:10px;color:var(--text2);font-size:12px">响应元数据中的命中/候选渠道（可能不完整，未验证可严格钉住）：' +
-        observed.map(u => '<span class="chip">' + esc(u) + '</span>').join('') + '</div>';
-    }
-    if ((r.fallbacks || []).length) {
-      html += '<div style="margin-top:8px;color:var(--text2);font-size:12px">网关排的候选顺序：' +
-        (r.fallbacks || []).map(u => '<span class="chip">' + esc(u) + '</span>').join('') + '</div>';
-    }
-    html += '</div>';
-    box.innerHTML = html;
-    loadUpstreams();
-  } catch (e) {
-    box.innerHTML = '<div class="section-body" style="padding:10px 0"><div class="empty">探测失败：' + esc(e.message) + '</div></div>';
-  }
-}
-
-// 探测结果里点一个渠道 = 直接钉住它（写入并落盘）。
-async function pinChannelFromProbe(modelId, upstream) {
-  try {
-    await api('POST', '/upstreams/save', {
-      modelId: modelId, upstreams: [upstream], exclude: [], pinMode: 'strict'
-    });
-    toast(modelId + ' 已钉住 → ' + upstream, 'success');
-    loadUpstreams();
-  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
-}
-
-function editUpstreamModel() {
-  const modelId = _('upstreamModelSelect').value;
-  if (!modelId) { toast('请先选择模型', 'error'); return; }
-  openUpstreamModal(modelId);
 }
 
 async function openUpstreamModal(modelId, pendingForm = null) {
@@ -2754,7 +2730,7 @@ async function saveUpstreamConfig() {
 }
 
 async function deleteUpstream(modelId) {
-  if (!confirm('删除 ' + modelId + ' 的上游配置？该模型将回到自动模式。')) return;
+  if (!confirm('清除 ' + modelId + ' 的上游配置（包括别名与重定向）？已添加的模型仍保留在列表中。')) return;
   try {
     await api('POST', '/upstreams/delete', { modelId: modelId });
     toast('已删除配置：' + modelId, 'success');

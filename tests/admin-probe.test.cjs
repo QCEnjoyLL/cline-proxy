@@ -288,3 +288,106 @@ test('token section explains on-demand refresh rather than account expiry', () =
   assert.match(result, /不代表账号到期/);
   assert.match(result, /不是每天定时刷新/);
 });
+
+function upstreamRuntime(models, entries = []) {
+  const nodes = new Proxy({}, { get(target, id) { return target[id] ||= {}; } });
+  const ctx = runtime(['upstreamRows', 'upstreamModeLabel', 'renderUpstreamTable',
+    'gotoUpstreamPage', 'setUpstreamPageSize', 'loadUpstreams', 'deleteUpstream'], {
+    _: id => nodes[id], esc: s => s, jsStr: s => s,
+    upstreamModels: models, upstreamEntries: entries,
+    api: () => assert.fail('rendering must not call the API'), toast() {}, confirm: () => true,
+  });
+  for (const name of ['upstreamPage', 'upstreamPageSize', 'upstreamPageTotal']) {
+    vm.runInContext(html.match(new RegExp('let ' + name + ' = \\d+;'))[0], ctx);
+  }
+  return { ctx, nodes };
+}
+
+test('upstream list includes added models in automatic mode and joins saved preferences', () => {
+  const { ctx, nodes } = upstreamRuntime([{id:'auto-model'}, {id:'pinned-model'}], [
+    {modelId:'pinned-model', upstreams:['provider'], pinMode:'preferred', pipeline:'direct'},
+    {modelId:'legacy-model', redirect:'real-model'},
+  ]);
+  ctx.renderUpstreamTable();
+  const markup = nodes.upstreamTableBody.innerHTML;
+  assert.equal((markup.match(/<tr>/g) || []).length, 3);
+  const autoRow = markup.split('</tr>')[0];
+  assert.match(autoRow, /auto-model.*自动.*由网关自动选择/);
+  assert.match(autoRow, /openUpstreamModal\('auto-model'\)/);
+  assert.doesNotMatch(autoRow, /deleteUpstream/);
+  assert.match(markup, /pinned-model.*优先\+回退.*provider.*direct/);
+  assert.match(markup, /legacy-model.*历史配置.*real-model/);
+  assert.equal(nodes.upstreamCount.textContent, '共 3 个模型');
+  assert.doesNotMatch(html, /upstreamModelSelect|probeResult|function probeUpstream\(|function pinChannelFromProbe\(|function editUpstreamModel\(/);
+});
+
+test('upstream pagination defaults to ten and handles first, last, size changes and shrinking lists', () => {
+  const { ctx, nodes } = upstreamRuntime(Array.from({length:23}, (_, i) => ({id:'model-' + i})));
+  const rowCount = () => (nodes.upstreamTableBody.innerHTML.match(/<tr>/g) || []).length;
+  ctx.renderUpstreamTable();
+  assert.equal(rowCount(), 10);
+  assert.equal(nodes.upstreamPageSize.value, '10');
+  assert.equal(nodes.upstreamPageInfo.textContent, '1 / 3');
+  assert.equal(nodes.upstreamFirst.disabled, true);
+  assert.equal(nodes.upstreamPrev.disabled, true);
+  assert.equal(nodes.upstreamNext.disabled, false);
+  ctx.gotoUpstreamPage(99);
+  assert.equal(rowCount(), 3);
+  assert.match(nodes.upstreamTableBody.innerHTML, /model-20/);
+  assert.equal(nodes.upstreamPageInfo.textContent, '3 / 3');
+  assert.equal(nodes.upstreamLast.disabled, true);
+  assert.equal(nodes.upstreamNext.disabled, true);
+  ctx.setUpstreamPageSize('20');
+  assert.equal(rowCount(), 20);
+  assert.equal(nodes.upstreamPageInfo.textContent, '1 / 2');
+  ctx.gotoUpstreamPage(2);
+  ctx.upstreamModels = [{id:'remaining'}];
+  ctx.renderUpstreamTable();
+  assert.equal(rowCount(), 1);
+  assert.equal(nodes.upstreamPageInfo.textContent, '1 / 1');
+  ctx.upstreamModels = [];
+  ctx.renderUpstreamTable();
+  assert.match(nodes.upstreamTableBody.innerHTML, /请先到「模型库」添加/);
+  assert.equal(nodes.upstreamNext.disabled, true);
+  ctx.setUpstreamPageSize('invalid');
+  assert.equal(nodes.upstreamPageSize.value, '10');
+});
+
+test('added aliases show shared routing with direct preferences taking precedence', () => {
+  const { ctx, nodes } = upstreamRuntime([{id:'shared'}, {id:'direct'}], [
+    {modelId:'z-owner', aliases:['shared'], upstreams:['later']},
+    {modelId:'a-owner', aliases:['shared','direct'], upstreams:['first']},
+    {modelId:'direct', upstreams:['own']},
+  ]);
+  ctx.renderUpstreamTable();
+  const rows = nodes.upstreamTableBody.innerHTML.split('</tr>');
+  assert.match(rows[0], /shared.*严格钉住.*first.*共用配置/);
+  assert.match(rows[0], /openUpstreamModal\('a-owner'\)/);
+  assert.doesNotMatch(rows[0], /deleteUpstream/);
+  assert.match(rows[1], /direct.*own.*openUpstreamModal\('direct'\)/);
+  assert.doesNotMatch(rows[1], /共用配置/);
+});
+
+test('upstream refresh and clearing preferences retain the current page and added model', async () => {
+  const models = Array.from({length:11}, (_, i) => ({id:'model-' + i}));
+  const { ctx, nodes } = upstreamRuntime(models, [{modelId:'model-10', upstreams:['provider']}]);
+  ctx.renderUpstreamTable();
+  ctx.gotoUpstreamPage(2);
+  const calls = [];
+  ctx.api = async (method, path, body) => {
+    calls.push([method, path]);
+    if (method === 'POST') {
+      assert.equal(body.modelId, 'model-10');
+      ctx.upstreamEntries = [];
+    }
+    return {data:{models, upstreams:ctx.upstreamEntries}};
+  };
+  await ctx.loadUpstreams();
+  assert.equal(nodes.upstreamPageInfo.textContent, '2 / 2');
+  assert.match(nodes.upstreamTableBody.innerHTML, /严格钉住/);
+  await ctx.deleteUpstream('model-10');
+  await new Promise(setImmediate);
+  assert.equal(nodes.upstreamPageInfo.textContent, '2 / 2');
+  assert.match(nodes.upstreamTableBody.innerHTML, /model-10.*自动/);
+  assert.deepEqual(calls, [['GET','/upstreams'], ['POST','/upstreams/delete'], ['GET','/upstreams']]);
+});
