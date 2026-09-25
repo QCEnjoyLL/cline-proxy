@@ -160,6 +160,8 @@ docker compose logs --tail=100
 
 ## 🖥️ 管理后台
 
+登录页和后台共用主题选择；首次访问默认深色，在后台手动切换后两页都会使用保存的主题。
+
 登录请求最多 16 KiB，每个直连 IP 在 5 分钟内最多连续尝试 10 次，成功登录后清零；触发限制时返回 `429`。反向代理部署时，限制按代理的连接 IP 计算，不信任客户端提供的转发 IP 请求头。
 
 ### 👤 账号管理
@@ -360,13 +362,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.7.11` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
+| `1.7.12` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.11   # 对应版本发布后可固定使用
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.7.12   # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 

@@ -1,12 +1,28 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cline 代理 - 登录</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2064%2064%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%230071e3%27%2F%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%235e5ce6%27%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%2764%27%20height%3D%2764%27%20rx%3D%2715%27%20fill%3D%27url(%23g)%27%2F%3E%3Cpath%20d%3D%27M36%209%20L19%2036h11l-2%2019%2017-27H34l2-19z%27%20fill%3D%27%23fff%27%2F%3E%3C%2Fsvg%3E">
+<script>
+// 尽早应用后台保存的主题，避免登录页先闪出深色或浅色。
+(function(){
+  try{
+    if(localStorage.getItem('cline-admin-theme')==='light'){
+      document.documentElement.removeAttribute('data-theme');
+    }
+  }catch(e){}
+  window.addEventListener('storage',function(e){
+    if(e.key==='cline-admin-theme'){
+      if(e.newValue==='light') document.documentElement.removeAttribute('data-theme');
+      else document.documentElement.setAttribute('data-theme','dark');
+    }
+  });
+})();
+</script>
 <style>
-/* 与 admin.html 共用同一套设计 token；登录页跟随系统主题，不提供手动切换 */
+/* 与 admin.html 共用同一套设计 token 和主题选择 */
 :root{
   --bg:#f2f3f5;
   --surface:rgba(255,255,255,.72);
@@ -147,16 +163,6 @@ button:disabled:active{transform:none}
   .card{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--surface-solid)}
 }
 </style>
-<!-- 跟随系统配色，避免首帧闪烁：尽早执行 -->
-<script>
-(function(){
-  try{
-    if(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches){
-      document.documentElement.setAttribute('data-theme','dark');
-    }
-  }catch(e){}
-})();
-</script>
 </head>
 <body>
 <svg class="sprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden"><defs>

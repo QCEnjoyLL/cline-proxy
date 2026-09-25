@@ -1,14 +1,22 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cline 代理管理面板</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2064%2064%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%230071e3%27%2F%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%235e5ce6%27%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%2764%27%20height%3D%2764%27%20rx%3D%2715%27%20fill%3D%27url(%23g)%27%2F%3E%3Cpath%20d%3D%27M36%209%20L19%2036h11l-2%2019%2017-27H34l2-19z%27%20fill%3D%27%23fff%27%2F%3E%3C%2Fsvg%3E">
+<script>
+// 在样式加载前恢复手动选择，避免登录后闪出默认主题。
+try {
+  if (localStorage.getItem('cline-admin-theme') === 'light') {
+    document.documentElement.removeAttribute('data-theme');
+  }
+} catch (e) {}
+</script>
 <style>
 /* ==========================================================================
    Cline 代理 · 设计系统
-   浅色为默认；深色为独立设计（低饱和表面、弱边框、以表面明度表达层级）。
+   默认深色；浅色可由用户手动选择。
    动效遵循 Apple《Designing Fluid Interfaces》：强 ease-out、短时长、
    按压即时反馈；仅 opacity/transform 参与动画。
    ========================================================================== */
@@ -2806,8 +2814,7 @@ setInterval(() => { loadStats(); }, 10000);
       var saved = localStorage.getItem(KEY);
       if (saved === 'light' || saved === 'dark') return saved;
     } catch (e) {}
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-      ? 'dark' : 'light';
+    return 'dark';
   }
 
   function paint(theme, animate) {
@@ -2831,17 +2838,6 @@ setInterval(() => { loadStats(); }, 10000);
     });
   }
 
-  // 用户没手动选过时，跟随系统偏好变化
-  if (window.matchMedia) {
-    var mq = window.matchMedia('(prefers-color-scheme: dark)');
-    var onChange = function () {
-      var saved = null;
-      try { saved = localStorage.getItem(KEY); } catch (e) {}
-      if (!saved) paint(mq.matches ? 'dark' : 'light', true);
-    };
-    if (mq.addEventListener) mq.addEventListener('change', onChange);
-    else if (mq.addListener) mq.addListener(onChange);
-  }
 })();
 </script>
 </body>
