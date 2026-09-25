@@ -292,7 +292,7 @@ test('token section explains on-demand refresh rather than account expiry', () =
 function upstreamRuntime(models, entries = []) {
   const nodes = new Proxy({}, { get(target, id) { return target[id] ||= {}; } });
   const ctx = runtime(['upstreamRows', 'upstreamModeLabel', 'renderUpstreamTable',
-    'gotoUpstreamPage', 'setUpstreamPageSize', 'loadUpstreams', 'deleteUpstream'], {
+    'gotoUpstreamPage', 'setUpstreamPageSize', 'setUpstreamSearch', 'loadUpstreams', 'deleteUpstream'], {
     _: id => nodes[id], esc: s => s, jsStr: s => s,
     upstreamModels: models, upstreamEntries: entries,
     api: () => assert.fail('rendering must not call the API'), toast() {}, confirm: () => true,
@@ -300,8 +300,40 @@ function upstreamRuntime(models, entries = []) {
   for (const name of ['upstreamPage', 'upstreamPageSize', 'upstreamPageTotal']) {
     vm.runInContext(html.match(new RegExp('let ' + name + ' = \\d+;'))[0], ctx);
   }
+  vm.runInContext(html.match(/let upstreamSearch = '';/)[0], ctx);
   return { ctx, nodes };
 }
+
+test('upstream search filters all pages case-insensitively and preserves the query on refresh', async () => {
+  const models = Array.from({length:12}, (_, i) => ({id:'vendor/flash-' + i})).concat({id:'other/model'});
+  const { ctx, nodes } = upstreamRuntime(models);
+  const markup = () => nodes.upstreamTableBody.innerHTML;
+  ctx.renderUpstreamTable();
+  ctx.gotoUpstreamPage(2);
+  ctx.setUpstreamSearch(' FLASH-11 ');
+  assert.match(markup(), /vendor\/flash-11/);
+  assert.doesNotMatch(markup(), /flash-10|other\/model/);
+  assert.equal(nodes.upstreamCount.textContent, '匹配 1 / 13 个模型');
+  assert.equal(nodes.upstreamPageInfo.textContent, '1 / 1');
+  ctx.api = async () => ({data:{models, upstreams:[]}});
+  await ctx.loadUpstreams();
+  assert.equal(nodes.upstreamCount.textContent, '匹配 1 / 13 个模型');
+  ctx.setUpstreamSearch('flash');
+  assert.equal(nodes.upstreamPageInfo.textContent, '1 / 2');
+  ctx.gotoUpstreamPage(2);
+  assert.equal((markup().match(/<tr>/g) || []).length, 2);
+  assert.doesNotMatch(markup(), /other\/model/);
+  ctx.setUpstreamPageSize('20');
+  assert.equal((markup().match(/<tr>/g) || []).length, 12);
+  ctx.setUpstreamSearch('<missing>');
+  assert.match(markup(), /没有匹配的模型/);
+  assert.doesNotMatch(markup(), /<missing>/);
+  assert.equal(nodes.upstreamPrev.disabled, true);
+  assert.equal(nodes.upstreamNext.disabled, true);
+  ctx.setUpstreamSearch('');
+  assert.equal(nodes.upstreamCount.textContent, '共 13 个模型');
+  assert.match(markup(), /other\/model/);
+});
 
 test('upstream list includes added models in automatic mode and joins saved preferences', () => {
   const { ctx, nodes } = upstreamRuntime([{id:'auto-model'}, {id:'pinned-model'}], [

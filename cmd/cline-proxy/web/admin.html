@@ -993,6 +993,14 @@ html.theme-anim,html.theme-anim *{
 
 <div class="section">
   <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-list"/></svg>模型上游配置<span id="upstreamCount" style="margin-left:8px;color:var(--text2);font-weight:400;font-size:11.5px"></span></div>
+  <div class="section-body catalog-search">
+    <div class="search-box" style="max-width:420px">
+      <svg aria-hidden="true"><use href="#i-search"/></svg>
+      <input type="search" id="upstreamSearch" placeholder="搜索模型 ID（如 deepseek、flash）"
+             autocomplete="off" spellcheck="false" aria-label="搜索上游配置中的模型"
+             oninput="setUpstreamSearch(this.value)">
+    </div>
+  </div>
   <div class="section-body" style="padding:0;overflow-x:auto">
     <table>
       <thead><tr><th>模型</th><th>模式</th><th>上游渠道</th><th>别名重定向</th><th>管道</th><th style="width:130px">操作</th></tr></thead>
@@ -2495,6 +2503,7 @@ let upstreamModalGeneration = 0;
 let upstreamPage = 1;
 let upstreamPageSize = 10;
 let upstreamPageTotal = 1;
+let upstreamSearch = '';
 
 async function loadUpstreams() {
   const tbody = _('upstreamTableBody');
@@ -2531,6 +2540,12 @@ function gotoUpstreamPage(page) {
   renderUpstreamTable();
 }
 
+function setUpstreamSearch(value) {
+  upstreamSearch = value.trim().toLowerCase();
+  upstreamPage = 1;
+  renderUpstreamTable();
+}
+
 function setUpstreamPageSize(size) {
   upstreamPageSize = [10, 20, 50, 100].includes(Number(size)) ? Number(size) : 10;
   upstreamPage = 1;
@@ -2551,7 +2566,8 @@ function upstreamModeLabel(e) {
 function renderUpstreamTable() {
   const tbody = _('upstreamTableBody');
   if (!tbody) return;
-  const rows = upstreamRows();
+  const allRows = upstreamRows();
+  const rows = upstreamSearch ? allRows.filter(e => e.modelId.toLowerCase().includes(upstreamSearch)) : allRows;
   upstreamPageTotal = Math.max(1, Math.ceil(rows.length / upstreamPageSize));
   upstreamPage = Math.max(1, Math.min(upstreamPage, upstreamPageTotal));
   _('upstreamPageSize').value = String(upstreamPageSize);
@@ -2559,9 +2575,13 @@ function renderUpstreamTable() {
   _('upstreamFirst').disabled = _('upstreamPrev').disabled = upstreamPage <= 1;
   _('upstreamLast').disabled = _('upstreamNext').disabled = upstreamPage >= upstreamPageTotal;
   const cnt = _('upstreamCount');
-  if (cnt) cnt.textContent = '共 ' + rows.length + ' 个模型';
+  if (cnt) cnt.textContent = upstreamSearch
+    ? '匹配 ' + rows.length + ' / ' + allRows.length + ' 个模型'
+    : '共 ' + rows.length + ' 个模型';
   if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">还没有添加模型，请先到「模型库」添加。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">' + (upstreamSearch
+      ? '没有匹配的模型，请更换关键词或清空搜索。'
+      : '还没有添加模型，请先到「模型库」添加。') + '</td></tr>';
     return;
   }
   const added = new Set(upstreamModels.map(m => m.id));
