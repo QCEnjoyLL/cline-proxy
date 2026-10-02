@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -219,6 +220,11 @@ type refreshError struct {
 	code   string
 }
 
+var (
+	errRefreshConnection = errors.New("cline refresh connection failed")
+	errRefreshResponse   = errors.New("cline refresh response invalid")
+)
+
 func (e *refreshError) Error() string { return fmt.Sprintf("cline refresh failed: %d", e.status) }
 func (e *refreshError) permanent() bool {
 	return e.status == 401 || e.status == 403 || e.code == "invalid_grant"
@@ -242,7 +248,7 @@ func refreshClineToken(refreshToken string) (*clineRefreshResp, error) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cline refresh: %w", err)
+		return nil, fmt.Errorf("%w: %w", errRefreshConnection, err)
 	}
 	defer resp.Body.Close()
 
@@ -256,10 +262,10 @@ func refreshClineToken(refreshToken string) (*clineRefreshResp, error) {
 
 	var c clineRefreshResp
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&c); err != nil {
-		return nil, fmt.Errorf("cline refresh decode: %w", err)
+		return nil, fmt.Errorf("%w: %w", errRefreshResponse, err)
 	}
 	if c.Data.AccessToken == "" {
-		return nil, fmt.Errorf("cline refresh returned no access token")
+		return nil, fmt.Errorf("%w: no access token", errRefreshResponse)
 	}
 	return &c, nil
 }

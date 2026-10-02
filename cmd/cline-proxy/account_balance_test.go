@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,7 +150,10 @@ func TestAccountBalanceErrorsRemainJSONThroughReverseProxy(t *testing.T) {
 		status               int
 	}{
 		{"revoked credential", `{}`, "保存的登录凭据已失效", http.StatusUnauthorized},
-		{"temporary refresh outage", `{}`, "凭据刷新暂时失败", http.StatusServiceUnavailable},
+		{"temporary refresh outage", `{}`, "官方凭据刷新接口返回 HTTP 503", http.StatusServiceUnavailable},
+		{"refresh rate limit", `{}`, "官方凭据刷新接口返回 HTTP 429", http.StatusTooManyRequests},
+		{"refresh network failure", ``, "连接官方凭据刷新接口失败或超时", 0},
+		{"malformed refresh response", `{}`, "官方凭据刷新接口响应格式异常", http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := seedReliabilityPool(t)
@@ -158,6 +162,9 @@ func TestAccountBalanceErrorsRemainJSONThroughReverseProxy(t *testing.T) {
 			mockReliabilityHTTP(t, func(r *http.Request) (*http.Response, error) {
 				if !strings.HasSuffix(r.URL.Path, "/auth/refresh") {
 					t.Fatalf("unexpected path %q", r.URL.Path)
+				}
+				if tc.status == 0 {
+					return nil, errors.New("connection reset")
 				}
 				return reliabilityResponse(tc.status, tc.response), nil
 			})
@@ -177,6 +184,20 @@ func TestAccountBalanceErrorsRemainJSONThroughReverseProxy(t *testing.T) {
 				t.Fatalf("unexpected account status %q", acc.Status)
 			}
 		})
+	}
+}
+
+func TestAccountBalanceDistinguishesCredentialPersistenceFailure(t *testing.T) {
+	p := seedReliabilityPool(t)
+	blockPoolWrites(t)
+	acc := p.Accounts[0]
+	mockReliabilityHTTP(t, func(*http.Request) (*http.Response, error) {
+		return reliabilityResponse(http.StatusOK, refreshedCredentials), nil
+	})
+	w := httptest.NewRecorder()
+	handleAdminAccountBalance(w, httptest.NewRequest("GET", "/admin/api/accounts/balance?accountId="+acc.AccountID, nil))
+	if w.Code != http.StatusFailedDependency || !strings.Contains(w.Body.String(), "账号池文件的写入权限") {
+		t.Fatalf("unexpected persistence error: %d %s", w.Code, w.Body.String())
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -45,6 +46,7 @@ func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalan
 	}
 	token, err := ensureAccountToken(acc)
 	if err != nil {
+		log.Printf("Credit balance credential refresh failed for account %s: %v", acc.AccountID, err)
 		return nil, balanceCredentialError(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
@@ -73,10 +75,22 @@ func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalan
 
 func balanceCredentialError(err error) error {
 	var authErr *refreshError
-	if errors.As(err, &authErr) && authErr.permanent() {
-		return fmt.Errorf("账号保存的登录凭据已失效，请重新导入该账号")
+	if errors.As(err, &authErr) {
+		if authErr.permanent() {
+			return fmt.Errorf("账号保存的登录凭据已失效，请重新导入该账号")
+		}
+		return fmt.Errorf("官方凭据刷新接口返回 HTTP %d，请稍后重试", authErr.status)
 	}
-	return fmt.Errorf("账号凭据刷新暂时失败，请稍后重试或检查服务日志")
+	if errors.Is(err, errPersistRefreshedCredentials) {
+		return fmt.Errorf("刷新后的账号凭据保存失败，请检查账号池文件的写入权限")
+	}
+	if errors.Is(err, errRefreshConnection) {
+		return fmt.Errorf("连接官方凭据刷新接口失败或超时，请检查服务网络")
+	}
+	if errors.Is(err, errRefreshResponse) {
+		return fmt.Errorf("官方凭据刷新接口响应格式异常")
+	}
+	return fmt.Errorf("账号凭据刷新失败，请检查服务日志")
 }
 
 func accountBalanceGET(ctx context.Context, acc *Account, token *string, path string, out any) error {
@@ -94,6 +108,7 @@ func accountBalanceGET(ctx context.Context, acc *Account, token *string, path st
 			resp.Body.Close()
 			refreshed, err := accountToken(acc, true, *token)
 			if err != nil {
+				log.Printf("Credit balance rejected token refresh failed for account %s: %v", acc.AccountID, err)
 				return balanceCredentialError(err)
 			}
 			*token = refreshed

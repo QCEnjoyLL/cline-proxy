@@ -371,6 +371,8 @@ type accountRefresh struct {
 	err   error
 }
 
+var errPersistRefreshedCredentials = errors.New("persist refreshed credentials")
+
 // One refresh per account at a time. Network I/O never holds poolMu.
 // rejectedToken avoids refreshing twice when an older request returns a late 401.
 func accountToken(acc *Account, force bool, rejectedToken string) (string, error) {
@@ -383,7 +385,7 @@ func accountToken(acc *Account, force bool, rejectedToken string) (string, error
 	if acc.tokenSavePending {
 		if err := savePoolLocked(); err != nil {
 			poolMu.Unlock()
-			return "", fmt.Errorf("persist refreshed credentials: %w", err)
+			return "", fmt.Errorf("%w: %w", errPersistRefreshedCredentials, err)
 		}
 		acc.tokenSavePending = false
 	}
@@ -421,7 +423,7 @@ func accountToken(acc *Account, force bool, rejectedToken string) (string, error
 			// Rotation already happened upstream: retain the new credential and retry
 			// persistence before using it again, never roll back to an invalid token.
 			acc.tokenSavePending = true
-			pending.err = fmt.Errorf("persist refreshed credentials: %w", saveErr)
+			pending.err = fmt.Errorf("%w: %w", errPersistRefreshedCredentials, saveErr)
 		}
 	}
 	acc.refresh = nil
