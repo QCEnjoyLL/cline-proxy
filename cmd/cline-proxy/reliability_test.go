@@ -145,6 +145,8 @@ func TestRefreshFailureClassificationAndRecovery(t *testing.T) {
 	}{
 		{"network", 0, "", false}, {"outage", 503, `{}`, false}, {"limited", 429, `{}`, false},
 		{"malformed", 200, `{}`, false}, {"unauthorized", 401, `{}`, true}, {"revoked", 400, `{"error":"invalid_grant"}`, true},
+		{"official invalid grant message", 400, `{"data":"","error":"failed to refresh token: invalid_grant","success":false}`, true},
+		{"other bad request", 400, `{"error":"invalid_request"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := seedReliabilityPool(t)

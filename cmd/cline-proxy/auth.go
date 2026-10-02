@@ -227,7 +227,9 @@ var (
 
 func (e *refreshError) Error() string { return fmt.Sprintf("cline refresh failed: %d", e.status) }
 func (e *refreshError) permanent() bool {
-	return e.status == 401 || e.status == 403 || e.code == "invalid_grant"
+	// Cline currently sends error="failed to refresh token: invalid_grant".
+	// Requiring an exact match leaves revoked refresh tokens incorrectly active.
+	return e.status == 401 || e.status == 403 || strings.Contains(strings.ToLower(e.code), "invalid_grant")
 }
 
 func refreshClineToken(refreshToken string) (*clineRefreshResp, error) {

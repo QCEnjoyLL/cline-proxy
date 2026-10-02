@@ -150,6 +150,8 @@ func TestAccountBalanceErrorsRemainJSONThroughReverseProxy(t *testing.T) {
 		status               int
 	}{
 		{"revoked credential", `{}`, "保存的登录凭据已失效", http.StatusUnauthorized},
+		{"official invalid grant message", `{"data":"","error":"failed to refresh token: invalid_grant","success":false}`, "保存的登录凭据已失效", http.StatusBadRequest},
+		{"other bad request", `{"error":"invalid_request"}`, "官方凭据刷新接口返回 HTTP 400", http.StatusBadRequest},
 		{"temporary refresh outage", `{}`, "官方凭据刷新接口返回 HTTP 503", http.StatusServiceUnavailable},
 		{"refresh rate limit", `{}`, "官方凭据刷新接口返回 HTTP 429", http.StatusTooManyRequests},
 		{"refresh network failure", ``, "连接官方凭据刷新接口失败或超时", 0},
@@ -180,7 +182,8 @@ func TestAccountBalanceErrorsRemainJSONThroughReverseProxy(t *testing.T) {
 			if strings.Contains(w.Body.String(), acc.RefreshToken) {
 				t.Fatal("credential leaked into the balance error")
 			}
-			if (acc.Status == "expired") != (tc.status == http.StatusUnauthorized) {
+			wantExpired := tc.status == http.StatusUnauthorized || tc.name == "official invalid grant message"
+			if (acc.Status == "expired") != wantExpired {
 				t.Fatalf("unexpected account status %q", acc.Status)
 			}
 		})
