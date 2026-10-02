@@ -94,6 +94,7 @@ func TestHandleOAuthStatusReportsState(t *testing.T) {
 		CreatedAt: time.Now(),
 		Done:      true,
 		Success:   true,
+		Updated:   true,
 		Email:     "done@example.com",
 	})
 	registerOAuthSession("s_failed", &oauthSessionState{
@@ -110,8 +111,8 @@ func TestHandleOAuthStatusReportsState(t *testing.T) {
 		check    func(t *testing.T, data map[string]any)
 	}{
 		{"s_done", http.StatusOK, func(t *testing.T, d map[string]any) {
-			if d["done"] != true || d["success"] != true {
-				t.Errorf("done/success = %v/%v", d["done"], d["success"])
+			if d["done"] != true || d["success"] != true || d["updated"] != true {
+				t.Errorf("done/success/updated = %v/%v/%v", d["done"], d["success"], d["updated"])
 			}
 			if d["email"] != "done@example.com" {
 				t.Errorf("email = %v", d["email"])

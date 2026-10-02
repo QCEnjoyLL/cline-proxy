@@ -247,9 +247,11 @@ type oauthSessionState struct {
 	DeviceCode string
 	UserCode   string
 	AuthURL    string
+	AccountID  string
 	CreatedAt  time.Time
 	Done       bool
 	Success    bool
+	Updated    bool
 	Email      string
 	Error      string
 }
@@ -314,6 +316,7 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/accounts/export", corsHandler(handleAdminAccountExport))
 	mux.HandleFunc("/admin/api/accounts/add", corsHandler(handleAdminAccountAdd))
 	mux.HandleFunc("/admin/api/accounts/delete", corsHandler(handleAdminAccountDelete))
+	mux.HandleFunc("/admin/api/accounts/credentials", corsHandler(handleAdminAccountCredentials))
 	mux.HandleFunc("/admin/api/oauth/start", corsHandler(handleOAuthStart))
 	mux.HandleFunc("/admin/api/oauth/status", corsHandler(handleOAuthStatus))
 	mux.HandleFunc("/admin/api/sso/import", corsHandler(handleSSOImport))
@@ -548,6 +551,19 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
 		return
 	}
+	var req struct {
+		AccountID string `json:"accountId"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := readJSONBody(r, &req); err != nil {
+			writeAPI(w, http.StatusBadRequest, apiResponse{Error: "无效的 OAuth 请求"})
+			return
+		}
+	}
+	if req.AccountID != "" && getAccountByID(req.AccountID) == nil {
+		writeAPI(w, http.StatusNotFound, apiResponse{Error: "目标账号不存在"})
+		return
+	}
 
 	device, err := workosDeviceAuth()
 	if err != nil {
@@ -560,11 +576,17 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		authURL = device.VerificationURI
 	}
 
-	sessionID := fmt.Sprintf("oauth_%d", time.Now().UnixMilli())
+	sessionBytes := make([]byte, 16)
+	if _, err := rand.Read(sessionBytes); err != nil {
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "创建 OAuth 会话失败"})
+		return
+	}
+	sessionID := "oauth_" + hex.EncodeToString(sessionBytes)
 	state := &oauthSessionState{
 		DeviceCode: device.DeviceCode,
 		UserCode:   device.UserCode,
 		AuthURL:    authURL,
+		AccountID:  req.AccountID,
 		CreatedAt:  time.Now(),
 	}
 
@@ -604,6 +626,21 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		email := "unknown"
 		if cline.Data.UserInfo != nil && cline.Data.UserInfo.Email != "" {
 			email = cline.Data.UserInfo.Email
+		}
+		if state.AccountID != "" {
+			email, err = replaceOAuthAccountCredentials(state.AccountID, cline)
+			oauthSessionsMu.Lock()
+			state.Done, state.Success = true, err == nil
+			if err != nil {
+				state.Error = credentialUpdateMessage(err)
+			} else {
+				state.Email, state.Updated = email, true
+			}
+			oauthSessionsMu.Unlock()
+			if err == nil {
+				log.Printf("OAuth account credentials updated: %s", truncateEmail(email))
+			}
+			return
 		}
 
 		acc := &Account{
@@ -654,10 +691,10 @@ func handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	// oauthSessionsMu 保护下改写（见 handleOAuthStart），之前只把指针取到锁外、
 	// 再在锁外读 state.Done/Email，是数据竞争——string 是两个机器字，极端调度
 	// 下可能读到「指针是新值、长度是旧值」的撕裂值。
-	var done, success bool
+	var done, success, updated bool
 	var email, stateErr string
 	if ok {
-		done, success = state.Done, state.Success
+		done, success, updated = state.Done, state.Success, state.Updated
 		email, stateErr = state.Email, state.Error
 	}
 	oauthSessionsMu.Unlock()
@@ -670,6 +707,7 @@ func handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"done":    done,
 		"success": success,
+		"updated": updated,
 	}
 	if done {
 		resp["email"] = email

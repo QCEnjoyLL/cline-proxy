@@ -44,6 +44,16 @@ func TestModalIsOutsideTabPanels(t *testing.T) {
 	}
 }
 
+func TestCredentialModalIsOutsideTabPanels(t *testing.T) {
+	page := renderPage(adminHTML)
+	modalIdx := strings.Index(page, `id="credentialModal"`)
+	lastTabIdx := strings.LastIndex(page, `class="tab-panel"`)
+	toastIdx := strings.Index(page, `id="toast"`)
+	if modalIdx < 0 || modalIdx < lastTabIdx || toastIdx < modalIdx {
+		t.Fatal("更新凭据弹层必须位于所有 tab 面板之后、toast 之前")
+	}
+}
+
 func abs(n int) int {
 	if n < 0 {
 		return -n

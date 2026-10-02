@@ -124,6 +124,8 @@ body::before{
 .modal-card{width:100%;max-width:920px;max-height:calc(100vh - 96px);overflow-y:auto;
   background:var(--surface-solid);border:1px solid var(--border);border-radius:var(--radius-lg);
   box-shadow:var(--shadow-lg);animation:panelIn var(--t-base) var(--ease-out)}
+.credential-modal-card{max-width:600px}
+.credential-modal-card .tab{background:none;border-top:0;border-left:0;border-right:0;font-family:inherit}
 /* 受限模型表：只让「模型」列吸收多余宽度，其余列按内容收窄，
    否则「23 小时 58 分」「2026/9/18 00:00:00」会被挤成多行。 */
 #modalBody table th,#modalBody table td{padding:9px 10px;vertical-align:middle}
@@ -1068,6 +1070,45 @@ html.theme-anim,html.theme-anim *{
   </div>
 </div>
 
+<div class="modal" id="credentialModal" role="dialog" aria-modal="true" aria-labelledby="credentialModalTitle">
+  <div class="modal-card credential-modal-card">
+    <div class="modal-head">
+      <div>
+        <h3 id="credentialModalTitle">更新账号凭据</h3>
+        <div class="sub" id="credentialModalSub"></div>
+      </div>
+      <button class="modal-close" type="button" onclick="closeCredentialModal()" title="关闭" aria-label="关闭">
+        <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p style="color:var(--text2);margin-bottom:14px">请选择重新登录方式。仅当新凭据的邮箱与此账号一致时才会覆盖；账号 ID、使用统计和禁用设置会保留。</p>
+      <div class="tabs" id="credentialTabs">
+        <button type="button" class="tab active" data-tab="oauth" onclick="selectCredentialMode('oauth')">OAuth 浏览器登录</button>
+        <button type="button" class="tab" data-tab="token" onclick="selectCredentialMode('token')">手动输入 Token</button>
+      </div>
+      <div id="credential-oauth" class="tab-content active">
+        <button class="btn btn-primary" type="button" id="credentialOAuthBtn" onclick="startCredentialOAuth()">开始 OAuth 登录</button>
+        <div id="credentialOAuthProgress" style="display:none;margin-top:14px">
+          <div id="credentialOAuthStatus" style="margin-bottom:8px" aria-live="polite"></div>
+          <a id="credentialOAuthUrl" target="_blank" rel="noopener noreferrer" style="color:var(--accent);overflow-wrap:anywhere"></a>
+          <div style="margin-top:8px">授权码：<strong id="credentialOAuthCode"></strong></div>
+        </div>
+      </div>
+      <div id="credential-token" class="tab-content">
+        <div class="field">
+          <label for="credentialTokenInput">Refresh Token</label>
+          <input type="password" id="credentialTokenInput" autocomplete="off" placeholder="粘贴新的 Refresh Token">
+        </div>
+        <div class="form-actions" style="margin-top:14px">
+          <button class="btn btn-primary" type="button" id="credentialTokenBtn" onclick="submitCredentialToken()">验证并更新</button>
+        </div>
+        <div id="credentialTokenStatus" style="color:var(--text2);margin-top:10px" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast"></div>
 
 <!-- 回到顶部。同样必须放在 .layout 之外：position:fixed 若处在
@@ -1173,7 +1214,11 @@ async function api(method, path, body, timeoutMs = 0) {
       throw new Error('接口返回了非 JSON 内容（' + status + '），请检查访问地址、登录状态或反向代理配置');
     }
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('接口响应格式不正确（HTTP ' + res.status + '）');
-    if (!res.ok || data.success !== true) throw new Error(typeof data.error === 'string' ? data.error : '请求失败（HTTP ' + res.status + '）');
+    if (!res.ok || data.success !== true) {
+      const err = new Error(typeof data.error === 'string' ? data.error : '请求失败（HTTP ' + res.status + '）');
+      err.data = data.data;
+      throw err;
+    }
     return data;
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('请求超时，请检查网络后重试');
@@ -1258,6 +1303,7 @@ function renderAccountPage() {
       '<td style="white-space:nowrap">' +
         toggle +
         '<button class="btn btn-sm" onclick="showAccountDetail(\'' + jsStr(a.accountId) + '\')" title="账号详情（按模型查看额度、查看 token）"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button> ' +
+        '<button class="btn btn-sm" onclick="openCredentialModal(\'' + jsStr(a.accountId) + '\')" title="更新凭据（OAuth 或 Refresh Token）"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg> 更新凭据</button> ' +
         '<button class="btn btn-sm" onclick="exportOneAccount(\'' + jsStr(a.accountId) + '\')" title="单独导出该账号"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg></button> ' +
         '<button class="btn btn-sm" onclick="resetAccount(\'' + jsStr(a.accountId) + '\')" title="重置"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></button> ' +
         '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\'' + jsStr(a.accountId) + '\')" title="删除"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>' +
@@ -1709,6 +1755,143 @@ async function refreshAllTokens() {
 }
 
 // ========== OAuth 登录 ==========
+let credentialAccountId = null;
+let credentialOAuthPending = null;
+let credentialOAuthStarting = false;
+let credentialTokenPending = false;
+
+function openCredentialModal(accountId) {
+  const account = accountList.find(a => a.accountId === accountId);
+  if (!account) { toast('目标账号不存在，请刷新列表', 'error'); return; }
+  credentialAccountId = accountId;
+  _('credentialModalSub').textContent = account.email;
+  _('credentialTokenInput').value = '';
+  _('credentialTokenStatus').textContent = '';
+  _('credentialOAuthProgress').style.display = credentialOAuthPending ? 'block' : 'none';
+  if (credentialOAuthPending && credentialOAuthPending.accountId !== accountId) {
+    _('credentialOAuthStatus').textContent = '另一个账号的 OAuth 授权正在进行，请等待完成。';
+    _('credentialOAuthUrl').textContent = '';
+    _('credentialOAuthUrl').removeAttribute('href');
+    _('credentialOAuthCode').textContent = '';
+  }
+  _('credentialOAuthBtn').disabled = !!credentialOAuthPending || credentialOAuthStarting;
+  selectCredentialMode('oauth');
+  _('credentialModal').classList.add('open');
+}
+
+function closeCredentialModal() {
+  if (credentialOAuthStarting) {
+    toast('正在创建 OAuth 登录，请稍候', 'info');
+    return;
+  }
+  if (credentialTokenPending) {
+    toast('正在验证并保存凭据，请稍候', 'info');
+    return;
+  }
+  _('credentialModal').classList.remove('open');
+  _('credentialTokenInput').value = '';
+  credentialAccountId = null;
+}
+
+function selectCredentialMode(mode) {
+  document.querySelectorAll('#credentialTabs .tab').forEach(el => el.classList.toggle('active', el.dataset.tab === mode));
+  _('credential-oauth').classList.toggle('active', mode === 'oauth');
+  _('credential-token').classList.toggle('active', mode === 'token');
+}
+
+async function startCredentialOAuth() {
+  if (!credentialAccountId || credentialOAuthPending || credentialOAuthStarting) return;
+  const accountId = credentialAccountId;
+  const btn = _('credentialOAuthBtn');
+  credentialOAuthStarting = true;
+  btn.disabled = true;
+  _('credentialOAuthProgress').style.display = 'block';
+  _('credentialOAuthStatus').textContent = '正在连接 WorkOS...';
+  _('credentialOAuthUrl').textContent = '';
+  _('credentialOAuthUrl').removeAttribute('href');
+  _('credentialOAuthCode').textContent = '';
+  try {
+    const d = await api('POST', '/oauth/start', { accountId });
+    credentialOAuthStarting = false;
+    const s = d.data;
+    credentialOAuthPending = { accountId, sessionId: s.sessionId };
+    _('credentialOAuthStatus').textContent = '请打开链接，在浏览器中完成登录。关闭弹层后，授权仍会继续。';
+    _('credentialOAuthUrl').textContent = s.verificationUri;
+    _('credentialOAuthUrl').href = s.verificationUri;
+    _('credentialOAuthCode').textContent = s.userCode;
+    const deadline = Date.now() + 7 * 60 * 1000;
+    const poll = async () => {
+      try {
+        const r = await api('GET', '/oauth/status?sessionId=' + encodeURIComponent(s.sessionId));
+        if (r.data.done) {
+          credentialOAuthPending = null;
+          btn.disabled = false;
+          if (r.data.success && r.data.updated) {
+            if (credentialAccountId === accountId) closeCredentialModal();
+            creditStates.delete(accountId);
+            loadAccounts(); loadStats();
+            toast('账号凭据已更新：' + r.data.email, 'success');
+          } else {
+            if (credentialAccountId === accountId) _('credentialOAuthStatus').textContent = '更新失败：' + (r.data.error || '未知错误');
+            toast('OAuth 更新失败：' + (r.data.error || '未知错误'), 'error');
+          }
+          return;
+        }
+      } catch (e) {
+        if (credentialAccountId === accountId) _('credentialOAuthStatus').textContent = '查询授权状态失败，正在重试：' + e.message;
+      }
+      if (Date.now() >= deadline) {
+        credentialOAuthPending = null;
+        btn.disabled = false;
+        loadAccounts();
+        if (credentialAccountId === accountId) _('credentialOAuthStatus').textContent = '无法确认 OAuth 结果，请刷新账号列表后重试。';
+        toast('无法确认 OAuth 更新结果，请刷新账号列表', 'error');
+        return;
+      }
+      setTimeout(poll, 2000);
+    };
+    setTimeout(poll, 2000);
+  } catch (e) {
+    credentialOAuthStarting = false;
+    btn.disabled = false;
+    _('credentialOAuthStatus').textContent = '启动失败：' + e.message;
+    toast('OAuth 启动失败：' + e.message, 'error');
+  }
+}
+
+async function submitCredentialToken() {
+  const accountId = credentialAccountId;
+  const token = _('credentialTokenInput').value.trim();
+  if (!accountId || !token) { toast('请输入 Refresh Token', 'error'); return; }
+  if (credentialOAuthPending?.accountId === accountId) {
+    toast('此账号的 OAuth 授权仍在进行，请等待完成后再更新', 'error');
+    return;
+  }
+  const btn = _('credentialTokenBtn');
+  btn.disabled = true;
+  credentialTokenPending = true;
+  _('credentialTokenStatus').textContent = '正在验证账号身份...';
+  try {
+    await api('POST', '/accounts/credentials', { accountId, refreshToken: token });
+    credentialTokenPending = false;
+    closeCredentialModal();
+    creditStates.delete(accountId);
+    loadAccounts(); loadStats();
+    toast('账号凭据已更新', 'success');
+  } catch (e) {
+    if (e.data?.refreshToken) {
+      _('credentialTokenInput').value = e.data.refreshToken;
+      _('credentialTokenStatus').textContent = '官方可能已轮换 Token，输入框现为最新 Token。请先复制保存，再离开此窗口。';
+    } else {
+      _('credentialTokenStatus').textContent = e.message;
+    }
+    toast('更新失败：' + e.message, 'error');
+  } finally {
+    credentialTokenPending = false;
+    btn.disabled = false;
+  }
+}
+
 async function startOAuth() {
   const btn = _('oauthBtn');
   btn.disabled = true;
@@ -2797,6 +2980,13 @@ setInterval(() => { loadStats(); }, 10000);
   modalTimer = setInterval(() => {
     if (modal.classList.contains('open')) refreshAccountDetail();
   }, 20000);
+})();
+(() => {
+  const modal = _('credentialModal');
+  modal.addEventListener('click', e => { if (e.target === modal) closeCredentialModal(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && modal.classList.contains('open')) closeCredentialModal();
+  });
 })();
 </script>
 
