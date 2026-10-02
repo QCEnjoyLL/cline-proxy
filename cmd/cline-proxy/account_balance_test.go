@@ -143,6 +143,60 @@ func TestAccountBalanceRefreshesRejectedTokenOnce(t *testing.T) {
 	}
 }
 
+func TestAccountBalanceErrorsRemainJSONThroughReverseProxy(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, want string
+		status               int
+	}{
+		{"revoked credential", `{}`, "保存的登录凭据已失效", http.StatusUnauthorized},
+		{"temporary refresh outage", `{}`, "凭据刷新暂时失败", http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := seedReliabilityPool(t)
+			acc := p.Accounts[0]
+			acc.RefreshToken = "private-refresh-token"
+			mockReliabilityHTTP(t, func(r *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(r.URL.Path, "/auth/refresh") {
+					t.Fatalf("unexpected path %q", r.URL.Path)
+				}
+				return reliabilityResponse(tc.status, tc.response), nil
+			})
+			w := httptest.NewRecorder()
+			handleAdminAccountBalance(w, httptest.NewRequest("GET", "/admin/api/accounts/balance?accountId="+acc.AccountID, nil))
+			if w.Code != http.StatusFailedDependency || w.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("status=%d content-type=%q", w.Code, w.Header().Get("Content-Type"))
+			}
+			var response apiResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || !strings.Contains(response.Error, tc.want) {
+				t.Fatalf("response=%q decode=%v", w.Body.String(), err)
+			}
+			if strings.Contains(w.Body.String(), acc.RefreshToken) {
+				t.Fatal("credential leaked into the balance error")
+			}
+			if (acc.Status == "expired") != (tc.status == http.StatusUnauthorized) {
+				t.Fatalf("unexpected account status %q", acc.Status)
+			}
+		})
+	}
+}
+
+func TestAccountBalanceReportsWhichOfficialRequestFailed(t *testing.T) {
+	p := seedReliabilityPool(t)
+	acc := p.Accounts[0]
+	acc.AccessToken, acc.ExpiresAt = "workos:cached", time.Now().Add(time.Hour).UnixMilli()
+	mockReliabilityHTTP(t, func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/me") {
+			return reliabilityResponse(200, `{"data":{"id":"user"}}`), nil
+		}
+		return reliabilityResponse(503, `{}`), nil
+	})
+	w := httptest.NewRecorder()
+	handleAdminAccountBalance(w, httptest.NewRequest("GET", "/admin/api/accounts/balance?accountId="+acc.AccountID, nil))
+	if w.Code != http.StatusFailedDependency || !strings.Contains(w.Body.String(), "查询 Credit 余额失败：官方余额查询失败（HTTP 503）") {
+		t.Fatalf("unexpected response: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAccountBalanceConcurrentQueriesShareRequestAndIsolateAccounts(t *testing.T) {
 	p := seedReliabilityPool(t)
 	acc := p.Accounts[0]

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,7 +45,7 @@ func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalan
 	}
 	token, err := ensureAccountToken(acc)
 	if err != nil {
-		return nil, fmt.Errorf("账号凭据刷新失败，请检查账号登录状态")
+		return nil, balanceCredentialError(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
@@ -52,7 +53,7 @@ func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalan
 		ID string `json:"id"`
 	}
 	if err := accountBalanceGET(ctx, acc, &token, "/users/me", &user); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("查询用户信息失败：%w", err)
 	}
 	if user.ID == "" {
 		return nil, fmt.Errorf("官方接口未返回用户 ID")
@@ -61,13 +62,21 @@ func fetchAccountBalance(ctx context.Context, acc *Account) (*accountCreditBalan
 		Balance *float64 `json:"balance"`
 	}
 	if err := accountBalanceGET(ctx, acc, &token, "/users/"+url.PathEscape(user.ID)+"/balance", &credits); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("查询 Credit 余额失败：%w", err)
 	}
 	if credits.Balance == nil {
 		return nil, fmt.Errorf("官方接口未返回 Credit 余额")
 	}
 	// Convert before caching so both the account list and details use Credits.
 	return &accountCreditBalance{Balance: *credits.Balance / microcreditsPerCredit, CheckedAt: time.Now().UnixMilli()}, nil
+}
+
+func balanceCredentialError(err error) error {
+	var authErr *refreshError
+	if errors.As(err, &authErr) && authErr.permanent() {
+		return fmt.Errorf("账号保存的登录凭据已失效，请重新导入该账号")
+	}
+	return fmt.Errorf("账号凭据刷新暂时失败，请稍后重试或检查服务日志")
 }
 
 func accountBalanceGET(ctx context.Context, acc *Account, token *string, path string, out any) error {
@@ -85,7 +94,7 @@ func accountBalanceGET(ctx context.Context, acc *Account, token *string, path st
 			resp.Body.Close()
 			refreshed, err := accountToken(acc, true, *token)
 			if err != nil {
-				return fmt.Errorf("账号凭据刷新失败，请检查账号登录状态")
+				return balanceCredentialError(err)
 			}
 			*token = refreshed
 			continue
@@ -163,7 +172,8 @@ func handleAdminAccountBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	value, err := cachedAccountBalance(r.Context(), acc, r.URL.Query().Get("refresh") == "1")
 	if err != nil {
-		writeAPI(w, http.StatusBadGateway, apiResponse{Error: err.Error()})
+		// 502 常被反向代理替换成 HTML 错误页，导致账号级具体原因丢失。
+		writeAPI(w, http.StatusFailedDependency, apiResponse{Error: err.Error()})
 		return
 	}
 	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: value})
