@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,7 +41,11 @@ var httpClient = &http.Client{
 }
 
 func httpPostForm(rawURL string, form url.Values) (*http.Response, error) {
-	req, err := http.NewRequest("POST", rawURL, strings.NewReader(form.Encode()))
+	return httpPostFormContext(context.Background(), rawURL, form)
+}
+
+func httpPostFormContext(ctx context.Context, rawURL string, form url.Values) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
@@ -49,11 +54,15 @@ func httpPostForm(rawURL string, form url.Values) (*http.Response, error) {
 }
 
 func httpPostJSON(rawURL string, body any) (*http.Response, error) {
+	return httpPostJSONContext(context.Background(), rawURL, body)
+}
+
+func httpPostJSONContext(ctx context.Context, rawURL string, body any) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", rawURL, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, "POST", rawURL, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}

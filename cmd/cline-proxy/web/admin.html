@@ -862,7 +862,7 @@ html.theme-anim,html.theme-anim *{
     </div>
     <div class="form-row">
       <div class="field">
-        <label>邮箱（可选，留空自动生成）</label>
+        <label>邮箱（可选，留空自动查询官方邮箱）</label>
         <input type="text" id="tokenEmail" placeholder="user@example.com">
       </div>
     </div>
@@ -1082,7 +1082,7 @@ html.theme-anim,html.theme-anim *{
       </button>
     </div>
     <div class="modal-body">
-      <p style="color:var(--text2);margin-bottom:14px">请选择重新登录方式。仅当新凭据的邮箱与此账号一致时才会覆盖；账号 ID、使用统计和禁用设置会保留。</p>
+      <p id="credentialIdentityNotice" style="color:var(--text2);margin-bottom:14px">请选择重新登录方式。仅当新凭据的邮箱与此账号一致时才会覆盖；账号 ID、使用统计和禁用设置会保留。</p>
       <div class="tabs" id="credentialTabs">
         <button type="button" class="tab active" data-tab="oauth" onclick="selectCredentialMode('oauth')">OAuth 浏览器登录</button>
         <button type="button" class="tab" data-tab="token" onclick="selectCredentialMode('token')">手动输入 Token</button>
@@ -1760,21 +1760,43 @@ let credentialOAuthPending = null;
 let credentialOAuthStarting = false;
 let credentialTokenPending = false;
 
+function syncCredentialControls() {
+  _('credentialOAuthBtn').disabled = !!credentialOAuthPending || credentialOAuthStarting || credentialTokenPending;
+  _('credentialTokenBtn').disabled = credentialTokenPending || credentialOAuthStarting || credentialOAuthPending?.accountId === credentialAccountId;
+  document.querySelectorAll('#credentialTabs .tab').forEach(el => el.disabled = credentialOAuthStarting || credentialTokenPending);
+}
+
+function restoreCredentialOAuth() {
+  const pending = credentialOAuthPending;
+  _('credentialOAuthProgress').style.display = pending ? 'block' : 'none';
+  _('credentialOAuthUrl').textContent = '';
+  _('credentialOAuthUrl').removeAttribute('href');
+  _('credentialOAuthCode').textContent = '';
+  if (!pending) return;
+  if (pending.accountId !== credentialAccountId) {
+    _('credentialOAuthStatus').textContent = '另一个账号的 OAuth 授权正在进行，请等待完成。';
+    return;
+  }
+  _('credentialOAuthStatus').textContent = pending.status;
+  _('credentialOAuthUrl').textContent = pending.verificationUri;
+  _('credentialOAuthUrl').href = pending.verificationUri;
+  _('credentialOAuthCode').textContent = pending.userCode;
+}
+
 function openCredentialModal(accountId) {
+  if (credentialOAuthStarting || credentialTokenPending) return;
   const account = accountList.find(a => a.accountId === accountId);
   if (!account) { toast('目标账号不存在，请刷新列表', 'error'); return; }
   credentialAccountId = accountId;
   _('credentialModalSub').textContent = account.email;
+  const legacy = !account.email || account.email === 'unknown' || /^(user_|batch_|sso_user_)\d+$/.test(account.email);
+  _('credentialIdentityNotice').textContent = legacy
+    ? '此账号未保存真实邮箱，本次更新将绑定新凭据的官方邮箱。请登录原账号；账号 ID、使用统计和禁用设置会保留。'
+    : '请选择重新登录方式。仅当新凭据的邮箱与此账号一致时才会覆盖；账号 ID、使用统计和禁用设置会保留。';
   _('credentialTokenInput').value = '';
   _('credentialTokenStatus').textContent = '';
-  _('credentialOAuthProgress').style.display = credentialOAuthPending ? 'block' : 'none';
-  if (credentialOAuthPending && credentialOAuthPending.accountId !== accountId) {
-    _('credentialOAuthStatus').textContent = '另一个账号的 OAuth 授权正在进行，请等待完成。';
-    _('credentialOAuthUrl').textContent = '';
-    _('credentialOAuthUrl').removeAttribute('href');
-    _('credentialOAuthCode').textContent = '';
-  }
-  _('credentialOAuthBtn').disabled = !!credentialOAuthPending || credentialOAuthStarting;
+  restoreCredentialOAuth();
+  syncCredentialControls();
   selectCredentialMode('oauth');
   _('credentialModal').classList.add('open');
 }
@@ -1800,32 +1822,31 @@ function selectCredentialMode(mode) {
 }
 
 async function startCredentialOAuth() {
-  if (!credentialAccountId || credentialOAuthPending || credentialOAuthStarting) return;
+  if (!credentialAccountId || credentialOAuthPending || credentialOAuthStarting || credentialTokenPending) return;
   const accountId = credentialAccountId;
-  const btn = _('credentialOAuthBtn');
   credentialOAuthStarting = true;
-  btn.disabled = true;
+  syncCredentialControls();
   _('credentialOAuthProgress').style.display = 'block';
   _('credentialOAuthStatus').textContent = '正在连接 WorkOS...';
   _('credentialOAuthUrl').textContent = '';
   _('credentialOAuthUrl').removeAttribute('href');
   _('credentialOAuthCode').textContent = '';
   try {
-    const d = await api('POST', '/oauth/start', { accountId });
+    const d = await api('POST', '/oauth/start', { accountId }, 35000);
     credentialOAuthStarting = false;
     const s = d.data;
-    credentialOAuthPending = { accountId, sessionId: s.sessionId };
-    _('credentialOAuthStatus').textContent = '请打开链接，在浏览器中完成登录。关闭弹层后，授权仍会继续。';
-    _('credentialOAuthUrl').textContent = s.verificationUri;
-    _('credentialOAuthUrl').href = s.verificationUri;
-    _('credentialOAuthCode').textContent = s.userCode;
+    credentialOAuthPending = { accountId, sessionId: s.sessionId, verificationUri: s.verificationUri, userCode: s.userCode,
+      status: '请打开链接，在浏览器中完成登录。关闭弹层后，授权仍会继续。' };
+    restoreCredentialOAuth();
+    syncCredentialControls();
     const deadline = Date.now() + 7 * 60 * 1000;
     const poll = async () => {
       try {
-        const r = await api('GET', '/oauth/status?sessionId=' + encodeURIComponent(s.sessionId));
+        const r = await api('GET', '/oauth/status?sessionId=' + encodeURIComponent(s.sessionId), null, 15000);
         if (r.data.done) {
           credentialOAuthPending = null;
-          btn.disabled = false;
+          syncCredentialControls();
+          if (credentialAccountId !== accountId) restoreCredentialOAuth();
           if (r.data.success && r.data.updated) {
             if (credentialAccountId === accountId) closeCredentialModal();
             creditStates.delete(accountId);
@@ -1838,11 +1859,13 @@ async function startCredentialOAuth() {
           return;
         }
       } catch (e) {
-        if (credentialAccountId === accountId) _('credentialOAuthStatus').textContent = '查询授权状态失败，正在重试：' + e.message;
+        credentialOAuthPending.status = '查询授权状态失败，正在重试：' + e.message;
+        if (credentialAccountId === accountId) restoreCredentialOAuth();
       }
       if (Date.now() >= deadline) {
         credentialOAuthPending = null;
-        btn.disabled = false;
+        syncCredentialControls();
+        if (credentialAccountId !== accountId) restoreCredentialOAuth();
         loadAccounts();
         if (credentialAccountId === accountId) _('credentialOAuthStatus').textContent = '无法确认 OAuth 结果，请刷新账号列表后重试。';
         toast('无法确认 OAuth 更新结果，请刷新账号列表', 'error');
@@ -1853,13 +1876,14 @@ async function startCredentialOAuth() {
     setTimeout(poll, 2000);
   } catch (e) {
     credentialOAuthStarting = false;
-    btn.disabled = false;
+    syncCredentialControls();
     _('credentialOAuthStatus').textContent = '启动失败：' + e.message;
     toast('OAuth 启动失败：' + e.message, 'error');
   }
 }
 
 async function submitCredentialToken() {
+  if (credentialTokenPending || credentialOAuthStarting) return;
   const accountId = credentialAccountId;
   const token = _('credentialTokenInput').value.trim();
   if (!accountId || !token) { toast('请输入 Refresh Token', 'error'); return; }
@@ -1867,9 +1891,8 @@ async function submitCredentialToken() {
     toast('此账号的 OAuth 授权仍在进行，请等待完成后再更新', 'error');
     return;
   }
-  const btn = _('credentialTokenBtn');
-  btn.disabled = true;
   credentialTokenPending = true;
+  syncCredentialControls();
   _('credentialTokenStatus').textContent = '正在验证账号身份...';
   try {
     await api('POST', '/accounts/credentials', { accountId, refreshToken: token });
@@ -1888,7 +1911,7 @@ async function submitCredentialToken() {
     toast('更新失败：' + e.message, 'error');
   } finally {
     credentialTokenPending = false;
-    btn.disabled = false;
+    syncCredentialControls();
   }
 }
 

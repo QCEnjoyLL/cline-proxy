@@ -77,7 +77,7 @@ func balanceCredentialError(err error) error {
 	var authErr *refreshError
 	if errors.As(err, &authErr) {
 		if authErr.permanent() {
-			return fmt.Errorf("账号保存的登录凭据已失效，请重新导入该账号")
+			return fmt.Errorf("账号保存的登录凭据已失效，请点击更新凭据重新登录")
 		}
 		return fmt.Errorf("官方凭据刷新接口返回 HTTP %d，请稍后重试", authErr.status)
 	}

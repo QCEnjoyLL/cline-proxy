@@ -127,8 +127,10 @@ func saveCredentials(rt string) {
 }
 
 func workosDeviceAuth() (*deviceAuthResp, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	form := url.Values{"client_id": {workosClientID}}
-	resp, err := httpPostForm(workosDeviceAuthURL, form)
+	resp, err := httpPostFormContext(ctx, workosDeviceAuthURL, form)
 	if err != nil {
 		return nil, fmt.Errorf("workos device auth: %w", err)
 	}
@@ -147,29 +149,34 @@ func workosDeviceAuth() (*deviceAuthResp, error) {
 }
 
 func pollWorkosToken(deviceCode string, interval, expiresIn int) (*authenticateResp, error) {
-	deadline := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(expiresIn)*time.Second)
+	defer cancel()
 	currentInterval := interval
 	if currentInterval < 5 {
 		currentInterval = 5
 	}
 
-	for time.Now().Before(deadline) {
+	for ctx.Err() == nil {
 		form := url.Values{
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 			"device_code": {deviceCode},
 			"client_id":   {workosClientID},
 		}
-		resp, err := httpPostForm(workosAuthenticateURL, form)
+		requestCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+		resp, err := httpPostFormContext(requestCtx, workosAuthenticateURL, form)
 		if err != nil {
+			stop()
 			return nil, fmt.Errorf("workos poll: %w", err)
 		}
 
 		var a authenticateResp
 		if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
 			resp.Body.Close()
+			stop()
 			return nil, fmt.Errorf("workos poll decode: %w", err)
 		}
 		resp.Body.Close()
+		stop()
 
 		if resp.StatusCode == 200 {
 			return &a, nil
@@ -177,10 +184,8 @@ func pollWorkosToken(deviceCode string, interval, expiresIn int) (*authenticateR
 
 		switch a.Error {
 		case "authorization_pending":
-			time.Sleep(time.Duration(currentInterval) * time.Second)
 		case "slow_down":
 			currentInterval += 5
-			time.Sleep(time.Duration(currentInterval) * time.Second)
 		default:
 			errDesc := a.ErrorDesc
 			if errDesc == "" {
@@ -188,16 +193,24 @@ func pollWorkosToken(deviceCode string, interval, expiresIn int) (*authenticateR
 			}
 			return nil, fmt.Errorf("workos polling error: %s", errDesc)
 		}
+		timer := time.NewTimer(time.Duration(currentInterval) * time.Second)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+		}
 	}
 	return nil, fmt.Errorf("device authorization expired (timeout)")
 }
 
 func registerWithCline(workosAccess, workosRefresh string) (*clineAuthResp, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	body := map[string]string{
 		"accessToken":  workosAccess,
 		"refreshToken": workosRefresh,
 	}
-	resp, err := httpPostJSON(clineAPIBase+"/auth/register", body)
+	resp, err := httpPostJSONContext(ctx, clineAPIBase+"/auth/register", body)
 	if err != nil {
 		return nil, fmt.Errorf("cline register: %w", err)
 	}

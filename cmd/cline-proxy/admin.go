@@ -472,10 +472,7 @@ func handleAdminAccountAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Email == "" {
-		// 走 accountCount：锁外 len(loadPool().Accounts) 与 addAccount 竞争。
-		req.Email = fmt.Sprintf("user_%d", accountCount()+1)
-	}
+	req.Email = importedAccountEmail(r.Context(), req.Email, resp.Data.AccessToken, fmt.Sprintf("user_%d", accountCount()+1))
 
 	acc := &Account{
 		AccountID:    fmt.Sprintf("acc_%d", time.Now().UnixMilli()),
@@ -503,8 +500,8 @@ func handleAdminAccountAdd(w http.ResponseWriter, r *http.Request) {
 		Message: fmt.Sprintf("Account %s added", req.Email),
 		Data: map[string]any{
 			"accountId": acc.AccountID,
-			"email":     acc.Email,
-			"status":    acc.Status,
+			"email":     req.Email,
+			"status":    "active",
 		},
 	})
 }
@@ -560,13 +557,22 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.AccountID != "" && getAccountByID(req.AccountID) == nil {
-		writeAPI(w, http.StatusNotFound, apiResponse{Error: "目标账号不存在"})
-		return
+	var updateAccount *Account
+	var update *accountCredentialUpdate
+	if req.AccountID != "" {
+		var err error
+		updateAccount, update, err = beginCredentialUpdate(req.AccountID)
+		if err != nil {
+			writeCredentialUpdateError(w, err, "")
+			return
+		}
 	}
 
 	device, err := workosDeviceAuth()
 	if err != nil {
+		if update != nil {
+			finishCredentialUpdate(updateAccount, update)
+		}
 		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
 		return
 	}
@@ -578,6 +584,9 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	sessionBytes := make([]byte, 16)
 	if _, err := rand.Read(sessionBytes); err != nil {
+		if update != nil {
+			finishCredentialUpdate(updateAccount, update)
+		}
 		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "创建 OAuth 会话失败"})
 		return
 	}
@@ -594,6 +603,21 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	// Start polling in background
 	go func() {
+		var loginErr error
+		var email string
+		defer func() {
+			if update != nil {
+				finishCredentialUpdate(updateAccount, update)
+			}
+			oauthSessionsMu.Lock()
+			defer oauthSessionsMu.Unlock()
+			state.Done, state.Success = true, loginErr == nil
+			if loginErr != nil {
+				state.Error = credentialUpdateMessage(loginErr)
+			} else {
+				state.Email, state.Updated = email, update != nil
+			}
+		}()
 		interval := device.Interval
 		if interval < 5 {
 			interval = 5
@@ -605,41 +629,33 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 		workosTok, err := pollWorkosToken(device.DeviceCode, interval, expiresIn)
 		if err != nil {
-			oauthSessionsMu.Lock()
-			state.Error = err.Error()
-			state.Done = true
-			state.Success = false
-			oauthSessionsMu.Unlock()
+			loginErr = err
 			return
 		}
 
+		if update != nil {
+			if err := activateCredentialUpdate(updateAccount, update); err != nil {
+				loginErr = err
+				return
+			}
+		}
 		cline, err := registerWithCline(workosTok.AccessToken, workosTok.RefreshToken)
 		if err != nil {
-			oauthSessionsMu.Lock()
-			state.Error = err.Error()
-			state.Done = true
-			state.Success = false
-			oauthSessionsMu.Unlock()
+			loginErr = err
 			return
 		}
 
-		email := "unknown"
+		email = "unknown"
 		if cline.Data.UserInfo != nil && cline.Data.UserInfo.Email != "" {
 			email = cline.Data.UserInfo.Email
 		}
 		if state.AccountID != "" {
 			email, err = replaceOAuthAccountCredentials(state.AccountID, cline)
-			oauthSessionsMu.Lock()
-			state.Done, state.Success = true, err == nil
 			if err != nil {
-				state.Error = credentialUpdateMessage(err)
-			} else {
-				state.Email, state.Updated = email, true
+				loginErr = err
+				return
 			}
-			oauthSessionsMu.Unlock()
-			if err == nil {
-				log.Printf("OAuth account credentials updated: %s", truncateEmail(email))
-			}
+			log.Printf("OAuth account credentials updated: %s", truncateEmail(email))
 			return
 		}
 
@@ -653,17 +669,10 @@ func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:    time.Now(),
 		}
 		if err := addAccount(acc); err != nil {
-			oauthSessionsMu.Lock()
-			state.Done, state.Success, state.Error = true, false, "save account: "+err.Error()
-			oauthSessionsMu.Unlock()
+			loginErr = fmt.Errorf("save account: %w", err)
 			return
 		}
 
-		oauthSessionsMu.Lock()
-		state.Done = true
-		state.Success = true
-		state.Email = email
-		oauthSessionsMu.Unlock()
 		log.Printf("OAuth account added: %s", truncateEmail(email))
 	}()
 
@@ -771,10 +780,7 @@ func handleSSOImport(w http.ResponseWriter, r *http.Request) {
 				errors = append(errors, fmt.Sprintf("token (len %d): %v", len(token), err))
 				continue
 			}
-			email := req.Email
-			if email == "" {
-				email = fmt.Sprintf("sso_user_%d", time.Now().UnixMilli())
-			}
+			email := importedAccountEmail(r.Context(), req.Email, resp.Data.AccessToken, fmt.Sprintf("sso_user_%d", time.Now().UnixMilli()))
 
 			acc := &Account{
 				AccountID:    fmt.Sprintf("acc_%d", time.Now().UnixMilli()),
@@ -849,10 +855,7 @@ func handleBatchImport(w http.ResponseWriter, r *http.Request) {
 			errors = append(errors, fmt.Sprintf("%s: %v", t.Email, err))
 			continue
 		}
-		email := t.Email
-		if email == "" {
-			email = fmt.Sprintf("batch_%d", time.Now().UnixMilli())
-		}
+		email := importedAccountEmail(r.Context(), t.Email, resp.Data.AccessToken, fmt.Sprintf("batch_%d", time.Now().UnixMilli()))
 		acc := &Account{
 			AccountID:    fmt.Sprintf("acc_%d", time.Now().UnixMilli()),
 			Email:        email,
@@ -900,7 +903,7 @@ func handleAdminRefreshAll(w http.ResponseWriter, r *http.Request) {
 	for _, a := range accounts {
 		if err := refreshAccountToken(a); err != nil {
 			failed++
-			log.Printf("Refresh failed for %s: %v", truncateEmail(a.Email), err)
+			log.Printf("Refresh failed for %s: %v", truncateEmail(accountEmail(a)), err)
 		}
 	}
 	if failed > 0 {

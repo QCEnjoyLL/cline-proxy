@@ -365,6 +365,12 @@ func getAccountByID(accountID string) *Account {
 	return nil
 }
 
+func accountEmail(acc *Account) string {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	return acc.Email
+}
+
 type accountRefresh struct {
 	done  chan struct{}
 	token string
@@ -376,7 +382,15 @@ var errPersistRefreshedCredentials = errors.New("persist refreshed credentials")
 // One refresh per account at a time. Network I/O never holds poolMu.
 // rejectedToken avoids refreshing twice when an older request returns a late 401.
 func accountToken(acc *Account, force bool, rejectedToken string) (string, error) {
-	poolMu.Lock()
+	for {
+		poolMu.Lock()
+		if update := acc.credentialUpdate; update != nil && update.active {
+			poolMu.Unlock()
+			<-update.done
+			continue
+		}
+		break
+	}
 	if pending := acc.refresh; pending != nil {
 		poolMu.Unlock()
 		<-pending.done
@@ -442,12 +456,19 @@ func refreshAccountToken(acc *Account) error {
 // 同账号的其它模型不受影响。modelID 为空时只按账号级状态过滤。
 // 手动禁用（Disabled）的账号任何模型都不参与轮询。
 func pickAccount(modelID string) *Account {
+	return pickAccountExcluding(modelID, nil)
+}
+
+func pickAccountExcluding(modelID string, tried map[string]bool) *Account {
 	p := loadPool()
 	poolMu.Lock()
 
 	now := time.Now()
 	active := make([]*Account, 0, len(p.Accounts))
 	for _, a := range p.Accounts {
+		if tried[a.AccountID] {
+			continue
+		}
 		if a.Disabled {
 			continue // 用户手动禁用：不自动恢复
 		}

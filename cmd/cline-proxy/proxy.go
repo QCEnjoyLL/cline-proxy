@@ -29,6 +29,7 @@ const (
 	// 一个恶意/异常的上游可以用递增下标把 map 撑到内存耗尽（模型单次
 	// 响应里常见工具数是几十个量级，300 足够宽松）。
 	maxPendingToolCalls = 300
+	maxAccountAttempts  = 3
 	// shutdownGracePeriod 是优雅退出时等待进行中请求结束的时长。
 	//
 	// 取 10s 是为了对齐 docker stop 的默认宽限期：超过它 docker 会直接 SIGKILL，
@@ -52,9 +53,10 @@ const (
 // 只能一律重试——限流时反而加剧限流，也会让 429 这类本该由客户端
 // 处理的信号彻底消失。
 type upstreamError struct {
-	Status  int    // 回给客户端的 HTTP 状态码
-	Type    string // OpenAI 风格的 error.type
-	Message string
+	Status         int    // 回给客户端的 HTTP 状态码
+	Type           string // OpenAI 风格的 error.type
+	Message        string
+	TryNextAccount bool
 }
 
 func (e *upstreamError) Error() string { return e.Message }
@@ -68,7 +70,7 @@ func newUpstreamError(status int, errType, format string, args ...any) *upstream
 // 规则与理由：
 //   - 2xx/3xx 不该走到这里；出现即视为上游异常，回 502。
 //   - 429 原样转达：让客户端知道「被限流了」，这是我们唯一不该自己吞掉的信号
-//     （账号池已经换过号了，仍然 429 说明整体都在限流）。
+//     （账号池已在次数上限内换号，仍然 429 时交给客户端退避）。
 //   - 401/403 转 502：这是**我们**的账号凭据失效，不是客户端的 API Key 有问题。
 //     若原样回 401，客户端会以为自己的 Key 无效而反复重配。
 //   - 其余 4xx 原样转达：这多半是客户端请求本身的问题（模型名、参数、
@@ -541,35 +543,58 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 	// 冷却过滤与冷却标记都用「实际发给上游的模型」（见 effectiveModel），
 	// 两者必须一致，否则冷却会标记到永远不会被查询的 key。
 	model := effectiveModel(params)
-	acc := pickAccount(model)
-	if acc == nil {
-		// 503 而不是 500：池子暂时不可用，等待 + 重试是正确反应
-		// （填号/冷却恢复后即可用），不是请求本身有问题。
-		return nil, newUpstreamError(http.StatusServiceUnavailable, "no_account",
-			"no active accounts available. Use --login or admin API to add accounts")
-	}
-
 	if model == "" {
 		return nil, newUpstreamError(http.StatusBadRequest, "invalid_request_error",
 			"model is required: specify a model in the request or add a default model in the admin panel")
 	}
+	body := buildUpstreamBody(params, stream)
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal body: %w", err)
+	}
+	tried := make(map[string]bool)
+	var lastErr error
+	for attempt := 0; attempt < maxAccountAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		acc := pickAccountExcluding(model, tried)
+		if acc == nil {
+			break
+		}
+		tried[acc.AccountID] = true
+		resp, err := callClineAPIForAccount(ctx, acc, model, body, bodyJSON, params, stream)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		var failure *upstreamError
+		if !errors.As(err, &failure) || !failure.TryNextAccount {
+			return nil, err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, newUpstreamError(http.StatusServiceUnavailable, "no_account",
+		"no active accounts available. Use --login or admin API to add accounts")
+}
+
+// Only retry explicit account rejection before returning an upstream response.
+// A network failure or an already-started stream must not replay a completion.
+func callClineAPIForAccount(ctx context.Context, acc *Account, model string, body map[string]any, bodyJSON []byte, params map[string]any, stream bool) (*http.Response, error) {
 	token, err := ensureAccountToken(acc)
 	if err != nil {
 		// 我方账号凭据出了问题，不是客户端的错：给 502，别让他怀疑自己的 Key。
 		// 邮箱用 truncateEmail：这条 message 会经 writeUpstreamError 原样回给
 		// API 客户端，任何持有有效 Key 的调用者都能读，不该拿到完整账号邮箱。
-		return nil, newUpstreamError(http.StatusBadGateway, "account_error",
-			"account %s token failed: %v", truncateEmail(acc.Email), err)
+		failure := newUpstreamError(http.StatusBadGateway, "account_error",
+			"account %s token failed: %v", truncateEmail(accountEmail(acc)), err)
+		failure.TryNextAccount = !errors.Is(err, errPersistRefreshedCredentials)
+		return nil, failure
 	}
-
-	body := buildUpstreamBody(params, stream)
 
 	sessionID, _ := body["session_id"].(string)
-
-	bodyJSON, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal body: %w", err)
-	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
 	if err != nil {
@@ -584,7 +609,7 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 		}
 	}
 	log.Printf("  upstream: account=%s stream=%v tools=%d msgs=%d max_tokens=%v effort=%v",
-		truncateEmail(acc.Email), stream, toolCount, getMsgCount(params), body["max_tokens"], body["reasoning_effort"])
+		truncateEmail(accountEmail(acc)), stream, toolCount, getMsgCount(params), body["max_tokens"], body["reasoning_effort"])
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -625,12 +650,16 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 					}
 				}
 				poolMu.Unlock()
-				return nil, newUpstreamError(http.StatusBadGateway, "account_error",
-					"account %s token expired permanently", truncateEmail(acc.Email))
+				failure := newUpstreamError(http.StatusBadGateway, "account_error",
+					"account %s token expired permanently", truncateEmail(accountEmail(acc)))
+				failure.TryNextAccount = true
+				return nil, failure
 			}
 		} else {
-			return nil, newUpstreamError(http.StatusBadGateway, "account_error",
-				"account %s refresh failed: %v", truncateEmail(acc.Email), refreshErr)
+			failure := newUpstreamError(http.StatusBadGateway, "account_error",
+				"account %s refresh failed: %v", truncateEmail(accountEmail(acc)), refreshErr)
+			failure.TryNextAccount = !errors.Is(refreshErr, errPersistRefreshedCredentials)
+			return nil, failure
 		}
 	}
 
@@ -648,14 +677,16 @@ func callClineAPI(ctx context.Context, params map[string]any, stream bool) (*htt
 			ttl := markCooldown(acc, model, info)
 			if info.Kind != limitKindUnknown && info.Kind != "" {
 				log.Printf("  limit reached: %s x %s (%s), cooldown %s, resets %s",
-					truncateEmail(acc.Email), model, info.Kind, ttl.Round(time.Second), formatResetAt(info.ResetAt))
+					truncateEmail(accountEmail(acc)), model, info.Kind, ttl.Round(time.Second), formatResetAt(info.ResetAt))
 			} else {
 				log.Printf("  cooldown: %s x %s for %s (unrecognized 429)",
-					truncateEmail(acc.Email), model, ttl.Round(time.Second))
+					truncateEmail(accountEmail(acc)), model, ttl.Round(time.Second))
 			}
 		}
-		return nil, newUpstreamError(clientStatusForUpstream(resp.StatusCode), "upstream_error",
+		failure := newUpstreamError(clientStatusForUpstream(resp.StatusCode), "upstream_error",
 			"API %d: %s", resp.StatusCode, truncate(string(bodyBytes), 500))
+		failure.TryNextAccount = resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden
+		return nil, failure
 	}
 
 	poolMu.Lock()

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -14,7 +15,87 @@ import (
 var (
 	errCredentialAccountMissing = errors.New("account no longer exists")
 	errCredentialEmailMismatch  = errors.New("authenticated email does not match account")
+	errCredentialUpdateBusy     = errors.New("credential update already in progress")
 )
+
+// OAuth reserves the edit while the browser is open. Automatic refresh remains
+// available until activateCredentialUpdate starts the credential exchange.
+type accountCredentialUpdate struct {
+	done                 chan struct{}
+	active               bool
+	originalRefreshToken string
+}
+
+func beginCredentialUpdate(accountID string) (*Account, *accountCredentialUpdate, error) {
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	for _, acc := range p.Accounts {
+		if acc.AccountID != accountID {
+			continue
+		}
+		if acc.credentialUpdate != nil {
+			return nil, nil, errCredentialUpdateBusy
+		}
+		update := &accountCredentialUpdate{done: make(chan struct{}), originalRefreshToken: acc.RefreshToken}
+		acc.credentialUpdate = update
+		return acc, update, nil
+	}
+	return nil, nil, errCredentialAccountMissing
+}
+
+func activateCredentialUpdate(acc *Account, update *accountCredentialUpdate) error {
+	for {
+		p := loadPool()
+		poolMu.Lock()
+		present := false
+		for _, candidate := range p.Accounts {
+			if candidate == acc {
+				present = true
+				break
+			}
+		}
+		if !present {
+			poolMu.Unlock()
+			return errCredentialAccountMissing
+		}
+		update.active = true
+		pending := acc.refresh
+		poolMu.Unlock()
+		if pending == nil {
+			return nil
+		}
+		<-pending.done
+	}
+}
+
+func finishCredentialUpdate(acc *Account, update *accountCredentialUpdate) {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if acc.credentialUpdate == update {
+		acc.credentialUpdate = nil
+		close(update.done)
+	}
+}
+
+var legacyAccountLabel = regexp.MustCompile(`^(?:user_|batch_|sso_user_)\d+$`)
+
+func isLegacyAccountEmail(email string) bool {
+	email = strings.TrimSpace(email)
+	return email == "" || email == "unknown" || legacyAccountLabel.MatchString(email)
+}
+
+// Preserve token import when the profile service is temporarily unavailable;
+// the generated label can be bound to a verified email on credential renewal.
+func importedAccountEmail(ctx context.Context, email, accessToken, fallback string) string {
+	if strings.TrimSpace(email) != "" {
+		return strings.TrimSpace(email)
+	}
+	if official, err := emailForAccessToken(ctx, accessToken); err == nil {
+		return official
+	}
+	return fallback
+}
 
 type replacementCredentials struct {
 	email        string
@@ -43,7 +124,8 @@ func replaceAccountCredentials(accountID string, next replacementCredentials) er
 			poolMu.Unlock()
 			return errCredentialAccountMissing
 		}
-		if !strings.EqualFold(strings.TrimSpace(acc.Email), strings.TrimSpace(next.email)) {
+		legacyEmail := isLegacyAccountEmail(acc.Email)
+		if !legacyEmail && !strings.EqualFold(strings.TrimSpace(acc.Email), strings.TrimSpace(next.email)) {
 			poolMu.Unlock()
 			return errCredentialEmailMismatch
 		}
@@ -54,6 +136,9 @@ func replaceAccountCredentials(accountID string, next replacementCredentials) er
 			continue
 		}
 		acc.AccessToken = "workos:" + next.accessToken
+		if legacyEmail {
+			acc.Email = strings.TrimSpace(next.email)
+		}
 		acc.RefreshToken = next.refreshToken
 		acc.ExpiresAt = next.expiresAt
 		acc.Status = "active"
@@ -137,17 +222,28 @@ func handleAdminAccountCredentials(w http.ResponseWriter, r *http.Request) {
 		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "需要有效的账号 ID 和 Refresh Token"})
 		return
 	}
-	if getAccountByID(req.AccountID) == nil {
-		writeAPI(w, http.StatusNotFound, apiResponse{Error: "目标账号不存在"})
+	acc, update, err := beginCredentialUpdate(req.AccountID)
+	if err != nil {
+		writeCredentialUpdateError(w, err, "")
 		return
 	}
-	refreshed, err := refreshClineToken(strings.TrimSpace(req.RefreshToken))
+	defer finishCredentialUpdate(acc, update)
+	if err := activateCredentialUpdate(acc, update); err != nil {
+		writeCredentialUpdateError(w, err, "")
+		return
+	}
+	refreshToken := strings.TrimSpace(req.RefreshToken)
+	poolMu.Lock()
+	if refreshToken == update.originalRefreshToken {
+		refreshToken = acc.RefreshToken
+	}
+	poolMu.Unlock()
+	refreshed, err := refreshClineToken(refreshToken)
 	if err != nil {
 		writeAPI(w, http.StatusFailedDependency, apiResponse{Error: balanceCredentialError(err).Error()})
 		return
 	}
 	email, err := emailForAccessToken(r.Context(), refreshed.Data.AccessToken)
-	refreshToken := strings.TrimSpace(req.RefreshToken)
 	if refreshed.Data.RefreshToken != "" {
 		refreshToken = refreshed.Data.RefreshToken
 	}
@@ -173,6 +269,8 @@ func writeCredentialUpdateError(w http.ResponseWriter, err error, refreshToken s
 		writeAPI(w, http.StatusNotFound, response)
 	case errors.Is(err, errCredentialEmailMismatch):
 		writeAPI(w, http.StatusConflict, response)
+	case errors.Is(err, errCredentialUpdateBusy):
+		writeAPI(w, http.StatusConflict, response)
 	default:
 		writeAPI(w, http.StatusInternalServerError, response)
 	}
@@ -184,6 +282,8 @@ func credentialUpdateMessage(err error) string {
 		return "目标账号已删除，未更新凭据"
 	case errors.Is(err, errCredentialEmailMismatch):
 		return "新凭据登录的邮箱与目标账号不一致，未覆盖原账号"
+	case errors.Is(err, errCredentialUpdateBusy):
+		return "此账号已有凭据更新正在进行，请等待完成后重试"
 	default:
 		return err.Error()
 	}

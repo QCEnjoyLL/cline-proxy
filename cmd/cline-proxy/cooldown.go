@@ -26,17 +26,17 @@ func cooldownKey(accountID, modelID string) string {
 type limitKind string
 
 const (
-	limitKindFreeDaily   limitKind = "free_daily"   // 免费模型的每日额度
-	limitKindPassLimit   limitKind = "pass_limit"   // ClinePass 订阅额度
-	limitKindSpendLimit  limitKind = "spend_limit"  // 账户/组织的周期花费上限
-	limitKindUnknown     limitKind = "unknown"      // 无法识别原因
+	limitKindFreeDaily  limitKind = "free_daily"  // 免费模型的每日额度
+	limitKindPassLimit  limitKind = "pass_limit"  // ClinePass 订阅额度
+	limitKindSpendLimit limitKind = "spend_limit" // 账户/组织的周期花费上限
+	limitKindUnknown    limitKind = "unknown"     // 无法识别原因
 )
 
 // limitInfo 是从 429 响应体里解析出的额度信息。
 type limitInfo struct {
 	Kind    limitKind `json:"kind"`
-	Detail  string    `json:"detail,omitempty"`  // 上游原文（已截断），供人工核对
-	ResetAt time.Time `json:"-"`                 // 上游给出的重置时刻；零值表示上游没说
+	Detail  string    `json:"detail,omitempty"` // 上游原文（已截断），供人工核对
+	ResetAt time.Time `json:"-"`                // 上游给出的重置时刻；零值表示上游没说
 }
 
 // 上游 429 响应体里用于识别的标记。
@@ -195,9 +195,9 @@ func parseJSONTimeField(body, field string) (time.Time, bool) {
 
 // cooldownRecord 是一条冷却记录的内部状态。
 type cooldownRecord struct {
-	Until time.Time  // 冷却截止时刻
-	Email string     // 账号邮箱（展示用；账号 ID 对人不友好）
-	Info  limitInfo  // 上游给出的额度信息
+	Until time.Time // 冷却截止时刻
+	Email string    // 账号邮箱（展示用；账号 ID 对人不友好）
+	Info  limitInfo // 上游给出的额度信息
 }
 
 // cooldownStore 保存全部「账号×模型」冷却记录（内存态，进程重启即清空）。
@@ -263,7 +263,7 @@ func markCooldown(acc *Account, modelID string, info limitInfo) time.Duration {
 
 	email := ""
 	if acc != nil {
-		email = acc.Email
+		email = accountEmail(acc)
 	}
 	cooldowns.mark(accountIDOf(acc), email, modelID, now, ttl, info)
 	return ttl

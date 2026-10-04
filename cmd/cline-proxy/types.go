@@ -5,6 +5,7 @@ import "time"
 type Account struct {
 	// Protected by poolMu; refresh results are shared by concurrent callers.
 	refresh          *accountRefresh
+	credentialUpdate *accountCredentialUpdate
 	tokenSavePending bool
 	credits          *accountCreditState // In-memory balance cache, protected by poolMu.
 
