@@ -398,6 +398,12 @@ textarea{resize:vertical;min-height:88px;font-family:var(--mono);font-size:12px;
   transition:opacity var(--t-press) var(--ease-out);
 }
 @media (hover:hover) and (pointer:fine){.model-tag button:hover{opacity:1}}
+.model-audit-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0 10px}
+.model-audit-toolbar select{width:auto;max-width:180px;padding:5px 10px;font-size:12px}
+.model-audit-table{overflow-x:auto;margin-top:12px;border:1px solid var(--border);border-radius:8px}
+.model-audit-table td{white-space:normal;font-size:12px;vertical-align:top}
+.model-audit-id{min-width:200px;overflow-wrap:anywhere}
+.model-audit-detail{min-width:180px;max-width:440px;overflow-wrap:anywhere;color:var(--text2)}
 
 /* ===== 模型库 ===== */
 .mgroup{margin-bottom:30px}
@@ -760,6 +766,24 @@ html.theme-anim,html.theme-anim *{
   <div class="section-body">
     <p style="color:var(--text2);margin-bottom:12px">已添加的模型会出现在 <span class="mono">/v1/models</span> 中。点击标签上的 <svg class="ic ic-inline" aria-hidden="true"><use href="#i-x"/></svg> 可移除。</p>
     <div id="modelsList">加载中...</div>
+    <div class="model-audit-toolbar">
+      <button class="btn btn-primary btn-sm" id="modelAuditStart" onclick="startModelAudit()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>一键检测已启用模型</button>
+      <button class="btn btn-sm" id="modelAuditStop" onclick="stopModelAudit()" style="display:none">停止检测</button>
+    </div>
+    <p>检测会刷新官方清单，并按当前上游配置发送小文本请求，可能消耗少量额度。清单缺失与请求失败分别展示，移除前可调整勾选。</p>
+    <div id="modelAuditResults" style="display:none">
+      <p id="modelAuditNotice" role="status" aria-live="polite"></p>
+      <p id="modelAuditWarning" style="color:var(--yellow)"></p>
+      <div class="model-audit-toolbar">
+        <select id="modelAuditFilter" aria-label="筛选检测结果" onchange="renderModelAudit()"><option value="attention">仅显示需关注</option><option value="all">显示全部结果</option></select>
+        <button class="btn btn-sm" id="modelAuditSelect" onclick="selectModelAuditSuggestions()">选择建议移除</button>
+        <button class="btn btn-sm" id="modelAuditClear" onclick="clearModelAuditSelection()">取消选择</button>
+        <button class="btn btn-danger btn-sm" id="modelAuditRemove" onclick="removeAuditedModels()" disabled>移除选中 (0)</button>
+      </div>
+      <div class="model-audit-table">
+        <table><thead><tr><th style="width:34px">选择</th><th>模型 ID</th><th>官方清单</th><th>可用性</th><th>说明</th></tr></thead><tbody id="modelAuditBody"></tbody></table>
+      </div>
+    </div>
   </div>
 </div>
 </div>
@@ -2180,6 +2204,7 @@ async function loadModels() {
     renderTags(_('settingsModelsList'));
     // 同步模型库的「已启用」标记，避免两处状态不一致
     mInstalled = models.map(m => m.id);
+    renderModelAudit();
     if (mDataGroups.length) renderRecommended();
     // 底部折叠区若已加载，一并刷新「已启用」标记
     if (mCatalogLoaded) renderCatalog();
@@ -2230,6 +2255,174 @@ let mDataGroups = [];     // 最近一次取到的分组数据
 let mFetchedAt = 0;       // 数据抓取时间戳
 let mAutoTimer = null;    // 自动刷新定时器
 const mChecks = new Map(); // Results shared by duplicate cards during this page session.
+
+let mAuditJob = null;
+let mAuditPolling = false;
+let mAuditBusy = false;
+const mAuditSelected = new Set();
+const mAuditSelectionSeen = new Set();
+
+function applyModelAudit(job) {
+  if (!job || !job.jobId || !Array.isArray(job.items)) throw new Error('批量检测结果格式不正确');
+  if (mAuditJob?.jobId !== job.jobId) {
+    mAuditSelected.clear();
+    mAuditSelectionSeen.clear();
+  }
+  mAuditJob = job;
+  job.items.forEach(item => {
+    if (['pending', 'checking'].includes(item.status) || mAuditSelectionSeen.has(item.modelId)) return;
+    mAuditSelectionSeen.add(item.modelId);
+    if (item.suggested) mAuditSelected.add(item.modelId);
+  });
+  renderModelAudit();
+}
+
+function modelAuditRows() {
+  const installed = new Set(mInstalled);
+  return (mAuditJob?.items || []).filter(item => installed.has(item.modelId));
+}
+
+function renderModelAudit() {
+  const running = mAuditJob?.status === 'running';
+  const start = _('modelAuditStart');
+  start.disabled = mAuditBusy || (running && mAuditPolling);
+  start.textContent = running ? (mAuditPolling ? '检测中…' : '恢复检测进度') : '一键检测已启用模型';
+  _('modelAuditStop').style.display = running ? '' : 'none';
+  _('modelAuditStop').disabled = mAuditBusy || mAuditJob?.stage === 'stopping';
+  _('modelAuditResults').style.display = mAuditJob ? '' : 'none';
+  if (!mAuditJob) return;
+  const rows = modelAuditRows();
+  const alive = new Set(rows.map(item => item.modelId));
+  mAuditSelected.forEach(id => { if (!alive.has(id)) mAuditSelected.delete(id); });
+  const missing = rows.filter(item => item.catalog === 'missing').length;
+  const failed = rows.filter(item => ['failed', 'unavailable'].includes(item.status)).length;
+  _('modelAuditNotice').textContent = (running
+    ? (mAuditJob.stage === 'catalog' ? '正在刷新官方清单…' : mAuditJob.stage === 'stopping' ? '正在停止检测…' : '正在检测…')
+    : mAuditJob.status === 'cancelled' ? '检测已停止' : '检测完成') +
+    ' · 已检测 ' + mAuditJob.completed + ' / ' + mAuditJob.items.length +
+    ' · 不在清单 ' + missing + ' 个 · 未通过检测 ' + failed + ' 个';
+  _('modelAuditWarning').textContent = [mAuditJob.warning, mAuditJob.error].filter(Boolean).join('；');
+  _('modelAuditSelect').disabled = running || mAuditBusy || !rows.some(item => item.suggested);
+  _('modelAuditClear').disabled = mAuditBusy || !mAuditSelected.size;
+  _('modelAuditRemove').disabled = running || mAuditBusy || !mAuditSelected.size;
+  _('modelAuditRemove').textContent = '移除选中 (' + mAuditSelected.size + ')';
+  const all = _('modelAuditFilter').value === 'all';
+  const visible = all ? rows : rows.filter(item => item.catalog !== 'present' || item.status !== 'available');
+  const statuses = {pending:'等待检测', checking:'检测中…', available:'本次可用', unavailable:'本次不可用', failed:'检测失败', skipped:'未完成检测'};
+  _('modelAuditBody').innerHTML = visible.map(item => {
+    const alias = item.upstreamModel !== item.modelId;
+    const membership = {present: alias ? '目标在清单中' : '在清单中', missing: alias ? '目标不在清单中' : '不在清单中', unknown:'未确认'}[item.catalog] || '未确认';
+    const terminal = !['pending', 'checking', 'skipped'].includes(item.status);
+    const detail = [alias ? '重定向至 ' + item.upstreamModel : '', item.error,
+      item.status === 'available' ? (item.latencyMs / 1000).toFixed(1) + ' 秒' : '',
+      item.catalog === 'missing' && item.status === 'available' ? '虽未列出，本次仍可用，默认保留' : '',
+      item.status === 'failed' && item.catalog !== 'missing' ? '可能与账号、额度或网络有关，默认保留' : '',
+      item.suggested ? '建议移除，可取消勾选' : ''].filter(Boolean).join('；');
+    return '<tr><td><input type="checkbox" data-audit-id="' + attr(item.modelId) + '" aria-label="选择 ' + attr(item.modelId) + '"' +
+      (mAuditSelected.has(item.modelId) ? ' checked' : '') + (!terminal || mAuditBusy ? ' disabled' : '') + '></td>' +
+      '<td class="mono model-audit-id">' + esc(item.modelId) + '</td>' +
+      '<td style="color:var(--' + (item.catalog === 'missing' ? 'yellow' : 'text2') + ')">' + membership + '</td>' +
+      '<td style="white-space:nowrap;color:var(--' + (item.status === 'available' ? 'green' : item.status === 'unavailable' ? 'red' : 'text2') + ')">' + (statuses[item.status] || '未知') + '</td>' +
+      '<td class="model-audit-detail">' + esc(detail) + '</td></tr>';
+  }).join('') || '<tr><td colspan="5" class="empty">' + (rows.length ? '所有已检测模型均在清单中且本次可用，可切换查看全部结果' : '检测记录中的模型已全部移除') + '</td></tr>';
+}
+
+async function pollModelAudit() {
+  if (mAuditPolling || !mAuditJob || mAuditJob.status !== 'running') return;
+  mAuditPolling = true;
+  const id = mAuditJob.jobId;
+  let failures = 0;
+  renderModelAudit();
+  try {
+    while (mAuditJob?.jobId === id && mAuditJob.status === 'running') {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        const d = await api('GET', '/models/audit?jobId=' + encodeURIComponent(id), null, 15000);
+        applyModelAudit(d.data);
+        failures = 0;
+      } catch (e) {
+        if (++failures >= 3) throw e;
+      }
+    }
+  } catch (e) {
+    toast('读取检测进度失败，可点击“恢复检测进度”：' + e.message, 'error');
+  } finally {
+    mAuditPolling = false;
+    renderModelAudit();
+  }
+}
+
+async function startModelAudit() {
+  if (mAuditBusy || mAuditPolling) return;
+  mAuditBusy = true;
+  renderModelAudit();
+  try {
+    // Refresh enabled IDs first so a completed audit can also be resumed after
+    // models were edited from another tab; POST reuses any running server job.
+    await loadModels();
+    const d = await api('POST', '/models/audit', null, 15000);
+    applyModelAudit(d.data);
+    pollModelAudit();
+  } catch (e) { toast('检测启动失败：' + e.message, 'error'); }
+  finally { mAuditBusy = false; renderModelAudit(); }
+}
+
+async function loadModelAudit() {
+  try {
+    const d = await api('GET', '/models/audit', null, 15000);
+    if (d.data) { applyModelAudit(d.data); pollModelAudit(); }
+  } catch (e) { /* A new server has no audit to restore. */ }
+}
+
+async function stopModelAudit() {
+  if (!mAuditJob || mAuditBusy) return;
+  mAuditBusy = true;
+  renderModelAudit();
+  try {
+    const d = await api('POST', '/models/audit/stop', {jobId:mAuditJob.jobId}, 15000);
+    applyModelAudit(d.data);
+    pollModelAudit();
+  } catch (e) { toast('停止失败：' + e.message, 'error'); }
+  finally { mAuditBusy = false; renderModelAudit(); }
+}
+
+function selectModelAuditSuggestions() {
+  mAuditSelected.clear();
+  modelAuditRows().forEach(item => { if (item.suggested) mAuditSelected.add(item.modelId); });
+  renderModelAudit();
+}
+
+function clearModelAuditSelection() {
+  mAuditSelected.clear();
+  renderModelAudit();
+}
+
+async function removeAuditedModels() {
+  if (mAuditBusy || mAuditJob?.status === 'running') return;
+  const ids = modelAuditRows().filter(item => mAuditSelected.has(item.modelId)).map(item => item.modelId);
+  if (!ids.length || !confirm('确定移除选中的 ' + ids.length + ' 个模型？如果移除了默认模型，将切换到剩余的第一个模型。')) return;
+  mAuditBusy = true;
+  renderModelAudit();
+  try {
+    const d = await api('POST', '/models/delete-batch', {ids}, 15000);
+    const removed = d.data.removed || [];
+    const gone = new Set([...removed, ...(d.data.skipped || [])]);
+    mInstalled = mInstalled.filter(id => !gone.has(id));
+    gone.forEach(id => mAuditSelected.delete(id));
+    await loadModels();
+    await loadConfig();
+    await loadUpstreams();
+    toast('已移除 ' + removed.length + ' 个模型', 'success');
+  } catch (e) { toast('移除失败：' + e.message, 'error'); }
+  finally { mAuditBusy = false; renderModelAudit(); }
+}
+
+_('modelAuditBody').addEventListener('change', e => {
+  const id = e.target.dataset.auditId;
+  if (!id) return;
+  if (e.target.checked) mAuditSelected.add(id); else mAuditSelected.delete(id);
+  renderModelAudit();
+});
 
 // ===== 底部「全部模型」折叠区 =====
 // 上游这份清单有 400+ 条（约 500 KB），只在用户展开时才抓取，也不参与上面的 10 分钟自动刷新。
@@ -2985,7 +3178,7 @@ async function deleteUpstream(modelId) {
 loadStats();
 loadAccounts();
 loadKeys();
-loadModels();
+loadModels().then(loadModelAudit);
 loadConfig();
 // 预取模型库数据（服务端有 30 分钟缓存，不会每次都回源）
 loadRecommended(false);

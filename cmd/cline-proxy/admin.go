@@ -340,6 +340,9 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	// 全部模型清单：与推荐分组不同，这份是平铺的完整列表，面板展开折叠块时才请求。
 	mux.HandleFunc("/admin/api/model-catalog", corsHandler(handleAdminModelCatalog))
 	mux.HandleFunc("/admin/api/models/check", corsHandler(handleAdminModelCheck))
+	mux.HandleFunc("/admin/api/models/audit", corsHandler(handleAdminModelAudit))
+	mux.HandleFunc("/admin/api/models/audit/stop", corsHandler(handleAdminModelAuditStop))
+	mux.HandleFunc("/admin/api/models/delete-batch", corsHandler(handleAdminModelsBatchDelete))
 	mux.HandleFunc("/admin/api/accounts/balance", corsHandler(handleAdminAccountBalance))
 	mux.HandleFunc("/admin/api/config", corsHandler(handleAdminConfig))
 	mux.HandleFunc("/admin/api/config/update", corsHandler(handleAdminUpdateConfig))

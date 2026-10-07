@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -293,4 +294,76 @@ func deleteCustomModel(id string) error {
 		return fmt.Errorf("%w: %v", errModelStorage, err)
 	}
 	return nil
+}
+
+// Remove a selected batch with one write. Retain routing preferences, which may
+// be shared by other aliases, and roll back the whole batch on persistence error.
+func deleteCustomModels(ids []string) (removed, skipped []string, err error) {
+	p := loadPool()
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	requested := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		requested[normalizeExistingModelID(id)] = true
+	}
+	found := make(map[string]bool)
+	filtered := make([]string, 0, len(p.CustomModels))
+	for _, id := range p.CustomModels {
+		normalized, normalizeErr := normalizeModelID(id)
+		if normalizeErr != nil {
+			normalized = id
+		}
+		if requested[normalized] {
+			found[normalized] = true
+		} else {
+			filtered = append(filtered, id)
+		}
+	}
+	removed, skipped = make([]string, 0), make([]string, 0)
+	seen := make(map[string]bool)
+	for _, raw := range ids {
+		id := normalizeExistingModelID(raw)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if found[id] {
+			removed = append(removed, id)
+		} else {
+			skipped = append(skipped, id)
+		}
+	}
+	if len(removed) == 0 {
+		return removed, skipped, nil
+	}
+	originalModels, originalDefault := p.CustomModels, p.DefaultModel
+	p.CustomModels = filtered
+	if !modelExistsLocked(p, p.DefaultModel) {
+		p.DefaultModel = ""
+	}
+	if saveErr := savePoolLocked(); saveErr != nil {
+		p.CustomModels, p.DefaultModel = originalModels, originalDefault
+		return nil, nil, fmt.Errorf("%w: %v", errModelStorage, saveErr)
+	}
+	return removed, skipped, nil
+}
+
+func handleAdminModelsBatchDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
+		return
+	}
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if readJSONBody(r, &req) != nil || len(req.IDs) == 0 || len(req.IDs) > maxBatchModelIDs {
+		writeAPI(w, http.StatusBadRequest, apiResponse{Error: fmt.Sprintf("请选择 1 到 %d 个模型", maxBatchModelIDs)})
+		return
+	}
+	removed, skipped, err := deleteCustomModels(req.IDs)
+	if err != nil {
+		writeAPI(w, http.StatusInternalServerError, apiResponse{Error: "模型移除失败，配置未改动"})
+		return
+	}
+	writeAPI(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{"removed": removed, "skipped": skipped}})
 }

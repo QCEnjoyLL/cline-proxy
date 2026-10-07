@@ -13,6 +13,15 @@ import (
 // upstream probe state. Each click sends only one text completion request.
 var modelCheckJobs = newProbeJobStore(checkModelAvailability)
 
+// Keep the HTTP status separate from the readable message so a batch check
+// never treats quota, authentication or network failures as a missing model.
+type modelCheckHTTPError struct {
+	status  int
+	message string
+}
+
+func (e *modelCheckHTTPError) Error() string { return e.message }
+
 func handleAdminModelCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		handleProbeStatus(w, r, modelCheckJobs)
@@ -42,10 +51,12 @@ func checkModelAvailability(ctx context.Context, modelID string) (*probeResult, 
 	body := probeRequestBody(upstreamModel, probeMaxTokens)
 	body["messages"] = []any{map[string]any{"role": "user", "content": "Reply with only OK."}}
 	applyUpstreamPrefs(body, modelID)
+	upstreamModel, _ = body["model"].(string)
+	result := &probeResult{ModelID: modelID, UpstreamModel: upstreamModel}
 	start := time.Now()
 	status, raw, err := upstreamCallContext(ctx, upstreamModel, body, 90*time.Second)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	if status != http.StatusOK {
 		reason := "上游请求失败"
@@ -59,18 +70,19 @@ func checkModelAvailability(ctx context.Context, modelID string) (*probeResult, 
 		case 429:
 			reason = "当前账号或模型受到限流，请稍后重试"
 		}
-		return nil, fmt.Errorf("%s（HTTP %d）", reason, status)
+		return result, &modelCheckHTTPError{status: status, message: fmt.Sprintf("%s（HTTP %d）", reason, status)}
 	}
 	var obj map[string]any
 	if json.Unmarshal(raw, &obj) != nil || obj == nil {
-		return nil, fmt.Errorf("上游返回 HTTP 200，但响应不是有效的 JSON")
+		return result, fmt.Errorf("上游返回 HTTP 200，但响应不是有效的 JSON")
 	}
 	d := unwrapUpstream(obj)
 	message := nestedMap(firstChoiceMap(d), "message")
 	content, _ := message["content"].(string)
 	// HTTP 200 alone (including empty reasoning output) cannot prove usability.
 	if obj["error"] != nil || d["error"] != nil || strings.TrimSpace(content) == "" {
-		return nil, fmt.Errorf("未获得有效文本回答，暂不能确认可用（可能是上游异常或输出预算不足）")
+		return result, fmt.Errorf("未获得有效文本回答，暂不能确认可用（可能是上游异常或输出预算不足）")
 	}
-	return &probeResult{ModelID: modelID, UpstreamModel: upstreamModel, LatencyMS: time.Since(start).Milliseconds()}, nil
+	result.LatencyMS = time.Since(start).Milliseconds()
+	return result, nil
 }
