@@ -2,6 +2,7 @@
 cline-proxy.exe
 cline-proxy.exe~
 data/
+/dist/
 .cline-accounts.json
 .cline-credentials.json
 # -capture 调试工具的输出目录：里面是明文凭据（Authorization 头、access/

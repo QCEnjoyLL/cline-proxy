@@ -6,6 +6,8 @@
 
 > 📦 镜像已经发布到 GHCR，使用者只需拉取镜像，无需安装 Go，也无需在本地构建。
 
+> 🪟 Windows 用户也可从 [Releases](https://github.com/QCEnjoyLL/cline-proxy/releases) 下载打包好的 exe / ZIP，无需安装 Go 或 Docker。普通 Intel / AMD 电脑选择 `windows-amd64`，Windows ARM 设备选择 `windows-arm64`。启动方法见 [Windows 使用说明](docs/windows.md)。
+
 ## ✨ 功能亮点
 
 - 🔄 **多账号轮询**：支持 `round_robin`、`fill`、`random` 三种策略，账号认证失败或限流时有限次数换号重试
@@ -375,13 +377,13 @@ ghcr.io/qcenjoyll/cline-proxy
 | Tag | 说明 |
 |---|---|
 | `latest` | 默认分支的最新构建 |
-| `1.9.0` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
+| `1.11.0` | 当前源码版本号（`cmd/cline-proxy/version.go`）；镜像构建时读取该值作为版本标签 |
 | `sha-<commit>` | 对应某次提交 |
 
 镜像标签直接来自源码里的版本号，所以拉取任意一个版本标签就能固定到具体那一版：
 
 ```bash
-docker pull ghcr.io/qcenjoyll/cline-proxy:1.9.0   # 对应版本发布后可固定使用
+docker pull ghcr.io/qcenjoyll/cline-proxy:1.11.0  # 对应版本发布后可固定使用
 docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 ```
 
@@ -394,6 +396,19 @@ docker pull ghcr.io/qcenjoyll/cline-proxy:latest  # 跟随默认分支
 - 🍓 `linux/arm64`
 
 GitHub Actions 会自动构建并发布镜像，普通使用者无需自行构建。
+
+## 🪟 自动发布 Windows 发行版
+
+`.github/workflows/release.yml` 的 **Publish Release** 工作流在推送到 `main` / `master`、推送 `v*` 标签时自动运行，也支持在 Actions 页面手动触发。版本号读取 `cmd/cline-proxy/version.go`，例如 `1.11.0` 会创建标签及 Release `v1.11.0`。推送已有标签时，标签必须与源码版本一致。
+
+发布前运行 Go 竞态测试、静态检查及前端测试，在 Windows 上构建 x64（amd64）和 ARM64 两种 exe，并运行 x64 exe 的版本检查。Release 包含：
+
+- 两种架构的独立 `.exe` 文件；
+- 两种架构的 `.zip` 包，内含 `cline-proxy.exe` 和 Windows 使用说明；
+- `SHA256SUMS.txt` 校验文件；
+- GitHub 自动提供的源码 ZIP 和 TAR.GZ，与版本标签对应。
+
+同一版本已经正式发布后会跳过，不覆盖现有下载文件。上传中断时保留草稿，重新运行可补齐文件再发布；已存在的标签不会被移动。以后修改版本号并推送即可发布新版本，无需手工创建 Release。
 
 ## 🩺 常见问题
 

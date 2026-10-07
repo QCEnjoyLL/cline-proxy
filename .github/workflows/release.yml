@@ -1,0 +1,181 @@
+name: Publish Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check version and existing release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version=$(sed -n 's/^var Version = "\([^"]*\)"$/\1/p' cmd/cline-proxy/version.go)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version in cmd/cline-proxy/version.go"
+            exit 1
+          fi
+          tag="v$version"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match source version $tag"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" 2>release-error.log); then
+            if [[ $(jq -r '.draft' <<< "$release") == false ]]; then
+              echo "Release $tag is already published; leaving its files unchanged."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          elif ! grep -q 'HTTP 404' release-error.log; then
+            cat release-error.log >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            if [[ $(git rev-list -n 1 "$tag") != "$GITHUB_SHA" ]]; then
+              echo "::error::Existing tag $tag points to a different commit; increase the source version."
+              exit 1
+            fi
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./...
+      - run: go vet ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/*.test.cjs
+
+  build:
+    needs: [prepare, test]
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and package Windows executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CGO_ENABLED = '0'
+          $env:GOOS = 'windows'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          foreach ($architecture in @('amd64', 'arm64')) {
+            $env:GOARCH = $architecture
+            $packageName = "cline-proxy-v$env:RELEASE_VERSION-windows-$architecture"
+            $packagePath = Join-Path $env:RUNNER_TEMP $packageName
+            New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
+            $executablePath = Join-Path $packagePath 'cline-proxy.exe'
+            go build -trimpath -ldflags "-s -w -X main.Version=$env:RELEASE_VERSION" -o $executablePath ./cmd/cline-proxy
+            if ($LASTEXITCODE -ne 0) { throw "Build failed for $architecture" }
+            if ($architecture -eq 'amd64') {
+              $actualVersion = & $executablePath -version
+              if ($LASTEXITCODE -ne 0 -or $actualVersion.Trim() -ne "v$env:RELEASE_VERSION") {
+                throw 'Windows executable version check failed'
+              }
+            }
+            Copy-Item -LiteralPath docs/windows.md -Destination (Join-Path $packagePath 'README.md')
+            Copy-Item -LiteralPath $executablePath -Destination "dist/$packageName.exe"
+            Compress-Archive -LiteralPath $executablePath, (Join-Path $packagePath 'README.md') -DestinationPath "dist/$packageName.zip" -Force
+          }
+          $checksums = Get-ChildItem -LiteralPath dist -File | Where-Object Extension -In '.exe', '.zip' | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $checksums | Set-Content -LiteralPath dist/SHA256SUMS.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: dist
+      - name: Verify release files
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS.txt
+      - name: Publish versioned release
+        shell: bash
+        run: |
+          # Recheck after taking the per-version lock: another run may have published it.
+          draft_exists=false
+          if release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" 2>release-error.log); then
+            if [[ $(jq -r '.draft' <<< "$release") == false ]]; then
+              echo "Release $RELEASE_TAG is already published."
+              exit 0
+            fi
+            draft_exists=true
+          elif ! grep -q 'HTTP 404' release-error.log; then
+            cat release-error.log >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            if [[ $(git rev-list -n 1 "$RELEASE_TAG") != "$GITHUB_SHA" ]]; then
+              echo "::error::Refusing to move existing tag $RELEASE_TAG"
+              exit 1
+            fi
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA"
+          fi
+          if [[ "$draft_exists" == false ]]; then
+            cat > release-notes.md <<'NOTES'
+          Windows 用户通常选择 **windows-amd64.zip**（Intel / AMD 64 位）；Windows ARM 设备选择 **windows-arm64.zip**。
+          ZIP 包包含 `cline-proxy.exe` 和使用说明，也可直接下载 `.exe`。下载后运行程序，在浏览器中打开 http://127.0.0.1:3457/admin/ 。
+          源码下载见下方 **Source code (zip)** / **Source code (tar.gz)**；`SHA256SUMS.txt` 可用于校验 exe 和 ZIP 包。
+          NOTES
+            prerelease=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then prerelease+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md --generate-notes "${prerelease[@]}"
+          fi
+          # A failed upload leaves a draft. A rerun completes the draft before publishing.
+          gh release upload "$RELEASE_TAG" dist/*.exe dist/*.zip dist/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
