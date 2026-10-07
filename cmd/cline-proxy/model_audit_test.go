@@ -341,7 +341,7 @@ func TestModelAuditAndRemovalRoutesValidationAndAuth(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	registerAdminRoutes(mux)
-	for _, path := range []string{"/models/audit", "/models/audit/stop", "/models/delete-batch"} {
+	for _, path := range []string{"/models/audit", "/models/audit/stop", "/models/audit/recheck", "/models/delete-batch"} {
 		for _, method := range []string{"GET", "POST"} {
 			w = httptest.NewRecorder()
 			requireAdminAuth(mux).ServeHTTP(w, httptest.NewRequest(method, "/admin/api"+path, nil))
@@ -349,5 +349,103 @@ func TestModelAuditAndRemovalRoutesValidationAndAuth(t *testing.T) {
 				t.Fatal(fmt.Sprintf("unprotected %s %s: %d", method, path, w.Code))
 			}
 		}
+	}
+}
+
+func TestAuditRecheckUpdatesOnlyOneRowAndSurvivesReload(t *testing.T) {
+	var checks, fetches atomic.Int32
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s := newModelAuditStore(func(context.Context) modelAuditCatalog {
+		fetches.Add(1)
+		return modelAuditCatalog{complete: true, ids: map[string]bool{"other": true, "retry": true}}
+	}, func(ctx context.Context, id string) (*probeResult, error) {
+		call := checks.Add(1)
+		if id == "retry" && call <= 2 {
+			return nil, &modelCheckHTTPError{status: 404, message: "model unavailable"}
+		}
+		if call > 2 {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return &probeResult{ModelID: id, LatencyMS: 123}, nil
+	})
+	start, _ := s.start(auditItems("retry", "other"))
+	before := awaitModelAudit(t, s, start.ID)
+	if !before.Items[0].Suggested || before.Completed != 2 {
+		t.Fatalf("bad initial results: %+v", before)
+	}
+	started, status, err := s.recheck(start.ID, "retry")
+	if err != nil || status != 202 || started.ID != start.ID || started.Completed != 1 || started.Items[0].Status != "pending" || started.Items[0].Suggested {
+		t.Fatalf("bad restart: %+v status=%d err=%v", started, status, err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("retry did not start")
+	}
+	if _, status, _ := s.recheck(start.ID, "retry"); status != 409 {
+		t.Fatal("concurrent retry was not rejected")
+	}
+	close(release)
+	after := awaitModelAudit(t, s, start.ID)
+	if checks.Load() != 3 || fetches.Load() != 1 || after.Completed != 2 || after.Items[0].Status != "available" || after.Items[0].Error != "" || after.Items[0].Suggested {
+		t.Fatalf("retry did not replace failure: %+v calls=%d fetches=%d", after, checks.Load(), fetches.Load())
+	}
+	if !reflect.DeepEqual(before.Items[1], after.Items[1]) {
+		t.Fatal("retry changed another model's result")
+	}
+	reloaded, _ := s.get("")
+	if reloaded.Items[0].Status != "available" {
+		t.Fatal("refresh restored the stale failed result")
+	}
+	if _, status, _ := s.recheck(start.ID, "absent"); status != 404 {
+		t.Fatal("unknown model accepted")
+	}
+	if _, status, _ := s.recheck("old-job", "retry"); status != 404 {
+		t.Fatal("old job accepted")
+	}
+}
+
+func TestAuditRecheckHTTPValidationAndCancelledRowCount(t *testing.T) {
+	old := modelAudits
+	s := newModelAuditStore(func(context.Context) modelAuditCatalog { return modelAuditCatalog{} }, func(context.Context, string) (*probeResult, error) {
+		return &probeResult{LatencyMS: 1}, nil
+	})
+	modelAudits = s
+	t.Cleanup(func() { modelAudits = old })
+	job, _ := s.start(auditItems("retry", "other"))
+	awaitModelAudit(t, s, job.ID)
+	s.mu.Lock()
+	s.job.Items[0].Status, s.job.Completed, s.job.Status = "skipped", 0, "cancelled"
+	s.job.Items[1].Status = "skipped"
+	s.mu.Unlock()
+	for _, body := range []string{`{}`, `{"jobId":"x"}`, `{`} {
+		w := httptest.NewRecorder()
+		handleAdminModelAuditRecheck(w, httptest.NewRequest("POST", "/models/audit/recheck", strings.NewReader(body)))
+		if w.Code != 400 {
+			t.Fatalf("invalid body accepted: %s", body)
+		}
+	}
+	w := httptest.NewRecorder()
+	body, _ := json.Marshal(map[string]string{"jobId": job.ID, "modelId": "retry"})
+	handleAdminModelAuditRecheck(w, httptest.NewRequest("POST", "/models/audit/recheck", strings.NewReader(string(body))))
+	if w.Code != 202 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("restart failed: %d %s", w.Code, w.Body.String())
+	}
+	after := awaitModelAudit(t, s, job.ID)
+	if after.Completed != 1 || after.Items[0].Status != "available" || after.Items[1].Status != "skipped" || after.Status != "cancelled" {
+		t.Fatalf("skipped row was counted twice: %+v", after)
+	}
+	if _, _, err := s.recheck(job.ID, "other"); err != nil {
+		t.Fatal(err)
+	}
+	after = awaitModelAudit(t, s, job.ID)
+	if after.Completed != 2 || after.Status != "done" {
+		t.Fatalf("remaining row did not complete: %+v", after)
 	}
 }

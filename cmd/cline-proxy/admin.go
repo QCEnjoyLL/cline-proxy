@@ -342,6 +342,7 @@ func registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/models/check", corsHandler(handleAdminModelCheck))
 	mux.HandleFunc("/admin/api/models/audit", corsHandler(handleAdminModelAudit))
 	mux.HandleFunc("/admin/api/models/audit/stop", corsHandler(handleAdminModelAuditStop))
+	mux.HandleFunc("/admin/api/models/audit/recheck", corsHandler(handleAdminModelAuditRecheck))
 	mux.HandleFunc("/admin/api/models/delete-batch", corsHandler(handleAdminModelsBatchDelete))
 	mux.HandleFunc("/admin/api/accounts/balance", corsHandler(handleAdminAccountBalance))
 	mux.HandleFunc("/admin/api/config", corsHandler(handleAdminConfig))

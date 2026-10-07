@@ -26,7 +26,7 @@ function runtime(installed, overrides = {}) {
   });
   for (const name of ['applyModelAudit', 'modelAuditRows', 'renderModelAudit', 'pollModelAudit',
     'startModelAudit', 'stopModelAudit', 'loadModelAudit', 'selectModelAuditSuggestions',
-    'clearModelAuditSelection', 'removeAuditedModels']) {
+    'clearModelAuditSelection', 'recheckAuditedModel', 'removeAuditedModels']) {
     vm.runInContext(source(name), ctx);
   }
   return {ctx, nodes, toasts};
@@ -172,4 +172,66 @@ test('failed removal retains selections, and cancellation or an active audit nev
   ctx.confirm = () => true;
   ctx.applyModelAudit({...done, status:'running'});
   await ctx.removeAuditedModels();
+});
+
+test('each result offers safe row actions and disables them during a check', () => {
+  const id = 'legacy"<model>';
+  const {ctx, nodes} = runtime([id]);
+  ctx.applyModelAudit(job([item(id, 'present', 'failed')]));
+  assert.match(nodes.modelAuditBody.innerHTML, /data-audit-action="check" data-model-id="legacy&quot;&lt;model&gt;">重新检测/);
+  assert.match(nodes.modelAuditBody.innerHTML, /data-audit-action="remove" data-model-id="legacy&quot;&lt;model&gt;">移除/);
+  ctx.applyModelAudit(job([item(id, 'present', 'checking')], {status:'running'}));
+  assert.match(nodes.modelAuditBody.innerHTML, /data-audit-action="check"[^>]* disabled>检测中/);
+  assert.match(nodes.modelAuditBody.innerHTML, /data-audit-action="remove"[^>]* disabled/);
+});
+
+test('single retry replaces a failed result and deselects it after recovery', async () => {
+  const calls = [];
+  const other = item('other', 'missing', 'unavailable', true);
+  const {ctx, nodes} = runtime(['retry', 'other'], {api: async (...args) => {
+    calls.push(args);
+    return {data:job([item('retry', 'present', calls.length === 1 ? 'pending' : 'available'), other],
+      {status:calls.length === 1 ? 'running' : 'done', completed:calls.length === 1 ? 1 : 2})};
+  }});
+  ctx.applyModelAudit(job([item('retry', 'present', 'unavailable', true), other]));
+  const running = ctx.recheckAuditedModel('retry');
+  await ctx.recheckAuditedModel('retry');
+  await running;
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][1], '/models/audit/recheck');
+  assert.equal(calls[0][2].jobId, 'batch/1');
+  assert.equal(calls[0][2].modelId, 'retry');
+  assert.equal(calls[1][1], '/models/audit?jobId=batch%2F1');
+  assert.deepEqual([...ctx.mAuditSelected], ['other']);
+  assert.equal(ctx.mAuditJob.items[0].status, 'available');
+  assert.match(nodes.modelAuditNotice.textContent, /未通过检测 1 个/);
+});
+
+test('a failed retry start retains the old result and selection', async () => {
+  const {ctx, toasts} = runtime(['a'], {api: async () => {throw new Error('job expired');}});
+  ctx.applyModelAudit(job([item('a', 'missing', 'unavailable', true)]));
+  await ctx.recheckAuditedModel('a');
+  assert.equal(ctx.mAuditJob.items[0].status, 'unavailable');
+  assert.deepEqual([...ctx.mAuditSelected], ['a']);
+  assert.equal(ctx.mAuditBusy, false);
+  assert.match(toasts.at(-1)[0], /job expired/);
+});
+
+test('single removal ignores other selected rows and names the target in confirmation', async () => {
+  const calls = [];
+  let question = '';
+  const {ctx} = runtime(['one', 'two'], {
+    confirm: text => {question = text; return true;},
+    api: async (method, path, body) => {
+      calls.push([...body.ids]);
+      return {data:{removed:['one'], skipped:[]}};
+    },
+  });
+  ctx.applyModelAudit(job([item('one', 'present', 'failed'), item('two', 'missing', 'unavailable', true)]));
+  await ctx.removeAuditedModels('one');
+  assert.match(question, /模型「one」/);
+  assert.deepEqual(calls, [['one']]);
+  assert.deepEqual([...ctx.mInstalled], ['two']);
+  assert.deepEqual([...ctx.mAuditSelected], ['two']);
 });

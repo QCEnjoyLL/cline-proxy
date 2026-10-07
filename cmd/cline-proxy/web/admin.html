@@ -420,6 +420,7 @@ textarea{resize:vertical;min-height:88px;font-family:var(--mono);font-size:12px;
 .model-audit-table td{white-space:normal;font-size:12px;vertical-align:top}
 .model-audit-id{min-width:200px;overflow-wrap:anywhere}
 .model-audit-detail{min-width:180px;max-width:440px;overflow-wrap:anywhere;color:var(--text2)}
+.model-audit-actions{display:flex;gap:8px;white-space:nowrap}
 
 /* ===== 模型库 ===== */
 .mgroup{margin-bottom:30px}
@@ -797,7 +798,7 @@ html.theme-anim,html.theme-anim *{
         <button class="btn btn-danger btn-sm" id="modelAuditRemove" onclick="removeAuditedModels()" disabled>移除选中 (0)</button>
       </div>
       <div class="model-audit-table">
-        <table><thead><tr><th style="width:34px">选择</th><th>模型 ID</th><th>官方清单</th><th>可用性</th><th>说明</th></tr></thead><tbody id="modelAuditBody"></tbody></table>
+        <table><thead><tr><th style="width:44px;white-space:nowrap">选择</th><th>模型 ID</th><th>官方清单</th><th>可用性</th><th>说明</th><th>操作</th></tr></thead><tbody id="modelAuditBody"></tbody></table>
       </div>
     </div>
   </div>
@@ -2344,8 +2345,12 @@ function renderModelAudit() {
       '<td class="mono model-audit-id">' + esc(item.modelId) + '</td>' +
       '<td style="color:var(--' + (item.catalog === 'missing' ? 'yellow' : 'text2') + ')">' + membership + '</td>' +
       '<td style="white-space:nowrap;color:var(--' + (item.status === 'available' ? 'green' : item.status === 'unavailable' ? 'red' : 'text2') + ')">' + (statuses[item.status] || '未知') + '</td>' +
-      '<td class="model-audit-detail">' + esc(detail) + '</td></tr>';
-  }).join('') || '<tr><td colspan="5" class="empty">' + (rows.length ? '所有已检测模型均在清单中且本次可用，可切换查看全部结果' : '检测记录中的模型已全部移除') + '</td></tr>';
+      '<td class="model-audit-detail">' + esc(detail) + '</td>' +
+      '<td><div class="model-audit-actions">' +
+        '<button class="btn btn-sm" data-audit-action="check" data-model-id="' + attr(item.modelId) + '"' + (running || mAuditBusy ? ' disabled' : '') + '>' + (item.status === 'checking' ? '检测中…' : '重新检测') + '</button>' +
+        '<button class="btn btn-danger btn-sm" data-audit-action="remove" data-model-id="' + attr(item.modelId) + '"' + (running || mAuditBusy ? ' disabled' : '') + '>移除</button>' +
+      '</div></td></tr>';
+  }).join('') || '<tr><td colspan="6" class="empty">' + (rows.length ? '所有已检测模型均在清单中且本次可用，可切换查看全部结果' : '检测记录中的模型已全部移除') + '</td></tr>';
 }
 
 async function pollModelAudit() {
@@ -2418,10 +2423,25 @@ function clearModelAuditSelection() {
   renderModelAudit();
 }
 
-async function removeAuditedModels() {
+async function recheckAuditedModel(modelId) {
+  if (mAuditBusy || mAuditJob?.status === 'running' || !modelAuditRows().some(item => item.modelId === modelId)) return;
+  mAuditBusy = true;
+  renderModelAudit();
+  try {
+    const d = await api('POST', '/models/audit/recheck', {jobId:mAuditJob.jobId, modelId}, 15000);
+    mAuditSelected.delete(modelId);
+    mAuditSelectionSeen.delete(modelId);
+    applyModelAudit(d.data);
+    pollModelAudit();
+  } catch (e) { toast('重新检测失败：' + e.message, 'error'); }
+  finally { mAuditBusy = false; renderModelAudit(); }
+}
+
+async function removeAuditedModels(modelId = '') {
   if (mAuditBusy || mAuditJob?.status === 'running') return;
-  const ids = modelAuditRows().filter(item => mAuditSelected.has(item.modelId)).map(item => item.modelId);
-  if (!ids.length || !confirm('确定移除选中的 ' + ids.length + ' 个模型？如果移除了默认模型，将切换到剩余的第一个模型。')) return;
+  const ids = modelAuditRows().filter(item => modelId ? item.modelId === modelId : mAuditSelected.has(item.modelId)).map(item => item.modelId);
+  const label = modelId ? '模型「' + modelId + '」' : '选中的 ' + ids.length + ' 个模型';
+  if (!ids.length || !confirm('确定移除' + label + '？如果移除了默认模型，将切换到剩余的第一个模型。')) return;
   mAuditBusy = true;
   renderModelAudit();
   try {
@@ -2443,6 +2463,14 @@ _('modelAuditBody').addEventListener('change', e => {
   if (!id) return;
   if (e.target.checked) mAuditSelected.add(id); else mAuditSelected.delete(id);
   renderModelAudit();
+});
+
+_('modelAuditBody').addEventListener('click', e => {
+  const button = e.target.closest('[data-audit-action]');
+  if (!button || button.disabled) return;
+  const id = button.dataset.modelId;
+  if (button.dataset.auditAction === 'check') recheckAuditedModel(id);
+  if (button.dataset.auditAction === 'remove') removeAuditedModels(id);
 });
 
 // ===== 底部「全部模型」折叠区 =====

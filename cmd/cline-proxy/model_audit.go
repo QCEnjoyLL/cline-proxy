@@ -98,6 +98,7 @@ type modelAuditJob struct {
 	Error     string           `json:"error,omitempty"`
 	finished  time.Time
 	cancel    context.CancelFunc
+	catalog   modelAuditCatalog
 }
 
 type modelAuditStore struct {
@@ -157,7 +158,7 @@ func (s *modelAuditStore) start(items []modelAuditItem) (modelAuditJob, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelAuditTimeout)
 	job := &modelAuditJob{ID: rand.Text(), Status: "running", Stage: "catalog", Items: append([]modelAuditItem(nil), items...), StartedAt: time.Now().UnixMilli(), cancel: cancel}
 	s.job = job
-	go s.run(ctx, job)
+	go s.run(ctx, job, nil, modelAuditCatalog{})
 	return s.snapshotLocked(), nil
 }
 
@@ -183,12 +184,48 @@ func (s *modelAuditStore) stop(id string) (modelAuditJob, bool) {
 	return s.snapshotLocked(), true
 }
 
-func (s *modelAuditStore) run(ctx context.Context, job *modelAuditJob) {
-	defer job.cancel()
-	catalog := s.fetch(ctx)
+// Recheck one row in the existing report, retaining all other results. Reuse
+// its catalog snapshot; a new full audit is what refreshes the official lists.
+func (s *modelAuditStore) recheck(jobID, modelID string) (modelAuditJob, int, error) {
 	s.mu.Lock()
-	job.Warning = catalog.warning
+	defer s.mu.Unlock()
+	job := s.job
+	if job == nil || job.ID != jobID || (!job.finished.IsZero() && time.Since(job.finished) > modelAuditRetention) {
+		return modelAuditJob{}, http.StatusNotFound, errors.New("检测结果已过期或服务已重启，请重新进行批量检测")
+	}
+	if job.Status == "running" {
+		return modelAuditJob{}, http.StatusConflict, errors.New("请等待当前检测完成后再重试")
+	}
 	for i := range job.Items {
+		item := &job.Items[i]
+		if item.ModelID != modelID {
+			continue
+		}
+		if item.Status == "available" || item.Status == "failed" || item.Status == "unavailable" {
+			job.Completed--
+		}
+		item.Status, item.Error, item.LatencyMS, item.Suggested = "pending", "", 0, false
+		ctx, cancel := context.WithTimeout(context.Background(), probeJobTimeout)
+		job.Status, job.Stage, job.Error = "running", "checking", ""
+		job.finished, job.cancel = time.Time{}, cancel
+		go s.run(ctx, job, []int{i}, job.catalog)
+		return s.snapshotLocked(), http.StatusAccepted, nil
+	}
+	return modelAuditJob{}, http.StatusNotFound, errors.New("该模型不在检测结果中")
+}
+
+func (s *modelAuditStore) run(ctx context.Context, job *modelAuditJob, indices []int, catalog modelAuditCatalog) {
+	defer job.cancel()
+	fullAudit := len(indices) == 0
+	if fullAudit {
+		catalog = s.fetch(ctx)
+		for i := range job.Items {
+			indices = append(indices, i)
+		}
+	}
+	s.mu.Lock()
+	job.Warning, job.catalog = catalog.warning, catalog
+	for _, i := range indices {
 		item := &job.Items[i]
 		if catalog.ids[item.UpstreamModel] {
 			item.Catalog = "present"
@@ -201,8 +238,8 @@ func (s *modelAuditStore) run(ctx context.Context, job *modelAuditJob) {
 	}
 	s.mu.Unlock()
 
-	queue := make(chan int, len(job.Items))
-	for i := range job.Items {
+	queue := make(chan int, len(indices))
+	for _, i := range indices {
 		queue <- i
 	}
 	close(queue)
@@ -266,11 +303,22 @@ func (s *modelAuditStore) run(ctx context.Context, job *modelAuditJob) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job.Status, job.Stage, job.finished = "done", "done", time.Now()
+	if ctx.Err() == nil {
+		for _, item := range job.Items {
+			if item.Status == "skipped" {
+				job.Status, job.Error = "cancelled", "部分模型尚未完成检测，可逐个重新检测"
+				break
+			}
+		}
+	}
 	if ctx.Err() != nil {
 		job.Status = "cancelled"
 		job.Error = "检测已停止，保留已完成结果"
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			job.Error = "检测达到 30 分钟时限，保留已完成结果；可重新检测"
+			if !fullAudit {
+				job.Error = "单个模型检测超时，可重新检测"
+			}
 		}
 		for i := range job.Items {
 			if job.Items[i].Status == "pending" || job.Items[i].Status == "checking" {
@@ -278,6 +326,28 @@ func (s *modelAuditStore) run(ctx context.Context, job *modelAuditJob) {
 			}
 		}
 	}
+}
+
+func handleAdminModelAuditRecheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodPost {
+		writeAPI(w, http.StatusMethodNotAllowed, apiResponse{Error: "method not allowed"})
+		return
+	}
+	var req struct {
+		JobID   string `json:"jobId"`
+		ModelID string `json:"modelId"`
+	}
+	if readJSONBody(r, &req) != nil || req.JobID == "" || req.ModelID == "" {
+		writeAPI(w, http.StatusBadRequest, apiResponse{Error: "jobId 和 modelId 不能为空"})
+		return
+	}
+	job, status, err := modelAudits.recheck(req.JobID, req.ModelID)
+	if err != nil {
+		writeAPI(w, status, apiResponse{Error: err.Error()})
+		return
+	}
+	writeAPI(w, status, apiResponse{Success: true, Data: job})
 }
 
 func handleAdminModelAudit(w http.ResponseWriter, r *http.Request) {
