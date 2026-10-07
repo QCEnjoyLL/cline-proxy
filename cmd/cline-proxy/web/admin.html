@@ -382,9 +382,9 @@ textarea{resize:vertical;min-height:88px;font-family:var(--mono);font-size:12px;
 .copy-icon{cursor:pointer;color:var(--text2);padding:3px 7px;border-radius:6px;transition:color var(--t-press) var(--ease-out),background var(--t-press) var(--ease-out)}
 @media (hover:hover) and (pointer:fine){.copy-icon:hover{color:var(--text);background:var(--bg3)}}
 
-.models-tags{display:flex;flex-wrap:wrap;gap:6px}
+.models-tags{display:flex;flex-wrap:wrap;gap:8px}
 .model-tag{
-  display:inline-flex;align-items:center;gap:2px;
+  display:inline-flex;align-items:center;gap:2px;max-width:100%;min-width:0;
   padding:4px 9px;border-radius:999px;font-size:11.5px;font-weight:500;
   background:var(--bg3);color:var(--text2);border:1px solid var(--border);
   transition:border-color var(--t-press) var(--ease-out),color var(--t-press) var(--ease-out);
@@ -392,12 +392,28 @@ textarea{resize:vertical;min-height:88px;font-family:var(--mono);font-size:12px;
 .model-tag.free{border-color:color-mix(in srgb,var(--green) 50%,transparent);color:var(--green);background:var(--green-soft)}
 .model-tag.pass{border-color:color-mix(in srgb,var(--yellow) 50%,transparent);color:var(--yellow);background:var(--yellow-soft)}
 .model-tag.custom{border-color:color-mix(in srgb,var(--accent) 50%,transparent);color:var(--accent);background:var(--accent-soft)}
+.model-tag-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .model-tag button{
-  border:0;background:none;color:inherit;cursor:pointer;padding:0 0 0 5px;
+  flex:none;border:0;background:none;color:inherit;cursor:pointer;padding:0 0 0 5px;
   font-size:12px;line-height:1;opacity:.6;font-family:inherit;
   transition:opacity var(--t-press) var(--ease-out);
 }
 @media (hover:hover) and (pointer:fine){.model-tag button:hover{opacity:1}}
+.enabled-models{gap:10px;padding:4px 0 6px}
+.enabled-models .model-tag{
+  max-width:min(100%,460px);gap:12px;padding:8px 10px 8px 14px;
+  border-radius:10px;font-size:12.5px;line-height:20px;
+  background:var(--surface-solid);border-color:var(--border-strong);color:var(--text);
+}
+.enabled-models .model-tag button{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:24px;height:24px;padding:0;border-radius:6px;color:var(--text2);opacity:1;
+  transition:color var(--t-press) var(--ease-out),background var(--t-press) var(--ease-out);
+}
+@media (hover:hover) and (pointer:fine){
+  .enabled-models .model-tag button:hover{color:var(--red);background:var(--red-soft)}
+}
+.enabled-models + .model-audit-toolbar{margin-top:20px}
 .model-audit-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0 10px}
 .model-audit-toolbar select{width:auto;max-width:180px;padding:5px 10px;font-size:12px}
 .model-audit-table{overflow-x:auto;margin-top:12px;border:1px solid var(--border);border-radius:8px}
@@ -765,7 +781,7 @@ html.theme-anim,html.theme-anim *{
   <div class="section-title"><svg class="ic-title" aria-hidden="true"><use href="#i-check-circle"/></svg>已启用的模型</div>
   <div class="section-body">
     <p style="color:var(--text2);margin-bottom:12px">已添加的模型会出现在 <span class="mono">/v1/models</span> 中。点击标签上的 <svg class="ic ic-inline" aria-hidden="true"><use href="#i-x"/></svg> 可移除。</p>
-    <div id="modelsList">加载中...</div>
+    <div class="models-tags enabled-models" id="modelsList">加载中...</div>
     <div class="model-audit-toolbar">
       <button class="btn btn-primary btn-sm" id="modelAuditStart" onclick="startModelAudit()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>一键检测已启用模型</button>
       <button class="btn btn-sm" id="modelAuditStop" onclick="stopModelAudit()" style="display:none">停止检测</button>
@@ -2189,10 +2205,15 @@ async function loadModels() {
       models.forEach(m => {
         const tag = document.createElement('span');
         tag.className = 'model-tag ' + (m.cost || 'free');
-        tag.appendChild(document.createTextNode(m.id));
+        const name = document.createElement('span');
+        name.className = 'model-tag-name';
+        name.textContent = m.id;
+        name.title = m.id;
+        tag.appendChild(name);
         const remove = document.createElement('button');
         remove.type = 'button';
-        remove.title = '\u5220\u9664\u6a21\u578b';
+        remove.title = '移除模型 ' + m.id;
+        remove.setAttribute('aria-label', remove.title);
         remove.textContent = '\u2715';
         remove.addEventListener('click', () => deleteCustomModel(m.id));
         tag.appendChild(remove);
